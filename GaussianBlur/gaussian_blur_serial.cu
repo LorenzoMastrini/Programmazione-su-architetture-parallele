@@ -5,6 +5,23 @@
 
 #define KERNEL_SIZE 5
 
+// Initialize SDL modules
+int init_SDL() {
+    // Carica il modulo grafico della libreria
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        printf("Errore SDL_Init: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // Formati di immagini supportate
+    if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG))) {
+        printf("Errore IMG_Init: %s\n", IMG_GetError());
+        return 1;
+    }
+
+    return 0;
+}
+
 // Kernel gaussiano 5x5 pre-calcolato e normalizzato
 double kernel[KERNEL_SIZE][KERNEL_SIZE] = {
     {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273},
@@ -85,12 +102,37 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 }
 
 int main(int argc, char* argv[]) {
-    if(SDL_Init(SDL_INIT_VIDEO) < 0) {
-        fprintf(stderr, "Impossibile inizializzare SDL: %s\n", SDL_GetError());
+    init_SDL();
+    
+    SDL_Window *windowNormal = SDL_CreateWindow("Gaussian Blur con SDL_Surface",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        800, 600, 0);
+    
+    SDL_Window *windowBlur = SDL_CreateWindow("Gaussian Blur con SDL_Surface",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        800, 600, 0);
+    
+    if (!windowNormal) {
+        fprintf(stderr, "Impossibile creare la finestra: %s\n", SDL_GetError());
+        IMG_Quit();
+        SDL_Quit();
         return 1;
     }
-    if (!(IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG)) {
-        fprintf(stderr, "Impossibile inizializzare SDL_image PNG: %s\n", IMG_GetError());
+    
+    SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
+    if (!screenNormal) {
+        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
+        SDL_DestroyWindow(windowNormal);
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
+    }
+
+    SDL_Surface *screenBlur = SDL_GetWindowSurface(windowBlur);
+    if (!screenBlur) {
+        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
+        SDL_DestroyWindow(windowBlur);
+        IMG_Quit();
         SDL_Quit();
         return 1;
     }
@@ -116,12 +158,27 @@ int main(int argc, char* argv[]) {
     image = image32;
 
     SDL_Surface* blurred = gaussian_blur(image);
-    if (blurred) {
-        SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
-        SDL_FreeSurface(blurred);
+    if (!blurred) {
+        fprintf(stderr, "Errore durante il Gaussian blur\n");
+        SDL_FreeSurface(image);
+        SDL_DestroyWindow(windowBlur);
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
     }
 
+    SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
+
+    SDL_BlitScaled(image, NULL, screenNormal, NULL);
+    SDL_UpdateWindowSurface(windowNormal);
+    SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
+    SDL_UpdateWindowSurface(windowBlur);
+    SDL_Delay(4000);
+    
+    SDL_FreeSurface(blurred);
     SDL_FreeSurface(image);
+    SDL_DestroyWindow(windowBlur);
+    SDL_DestroyWindow(windowNormal);
     IMG_Quit();
     SDL_Quit();
 
