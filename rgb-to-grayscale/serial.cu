@@ -26,21 +26,20 @@ void rgb_to_grayscale(SDL_Surface *img) {
     // Blocca la superficie per accedere ai pixel
     SDL_LockSurface(img);
 
-    Uint32 *pixels = (Uint32 *)img->pixels;
-    int pitch = img->pitch / 4; // numero di Uint32 per riga (pitch = #pixel per riga)
+    Uint32 *pixels = (Uint32*) img->pixels;
+    int pixel_per_row = img->pitch / 4; // numero di pixel (ciascuno Uint32) per riga (pitch = #byte per riga)
 
     for (int y = 0; y < img->h; y++) {
         for (int x = 0; x < img->w; x++) {
-            Uint32 p = pixels[y * pitch + x]; // accedo a ogni pixel
+            Uint32 p = pixels[y * pixel_per_row + x]; // accedo a ogni pixel
 
-            Uint8 a = (p >> 24) & 0xFF;
             Uint8 r = (p >> 16) & 0xFF;
             Uint8 g = (p >> 8) & 0xFF;
             Uint8 b = p & 0xFF;
 
             // Scala di grigi
             Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
-            pixels[y * pitch + x] = (a << 24) | (gray << 16) | (gray << 8) | gray;
+            pixels[y * pixel_per_row + x] = (gray << 16) | (gray << 8) | gray;
         }
     }
 
@@ -60,14 +59,14 @@ int main() {
     SDL_Surface *screen = SDL_GetWindowSurface(window);
 
     // Carica l'immagine in una SDL_Surface
-    SDL_Surface *image = IMG_Load("img.jpg");
+    SDL_Surface *image = IMG_Load("../images/img.jpg");
     if (!image) {
         printf("Errore IMG_Load: %s\n", IMG_GetError());
         return 1;
     }
 
     // Converti nel formato della finestra per evitare problemi di formato pixel
-    SDL_Surface *converted = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_ARGB8888, 0); // ogni canale è composto da 8 bit (1 byte) => ogni pixel da 32 bit (4 byte)
+    SDL_Surface *converted = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_RGB888, 0); // ogni canale è composto da 8 bit (1 byte) => ogni pixel da 32 bit (4 byte)
     SDL_FreeSurface(image);
 
     rgb_to_grayscale(converted);
