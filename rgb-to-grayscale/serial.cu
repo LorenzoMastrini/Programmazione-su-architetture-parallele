@@ -2,6 +2,8 @@
 #include <SDL2/SDL_image.h>
 #include <stdio.h>
 
+
+
 // Initialize SDL modules
 int init_SDL() {
     // Carica il modulo grafico della libreria
@@ -33,9 +35,8 @@ void rgb_to_grayscale(SDL_Surface *img) {
         for (int x = 0; x < img->w; x++) {
             Uint32 p = pixels[y * pixel_per_row + x]; // accedo a ogni pixel
 
-            Uint8 r = (p >> 16) & 0xFF;
-            Uint8 g = (p >> 8) & 0xFF;
-            Uint8 b = p & 0xFF;
+            Uint8 r, g, b;
+            SDL_GetRGB(p, img->format, &r, &g, &b);
 
             // Scala di grigi
             Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
@@ -50,13 +51,6 @@ void rgb_to_grayscale(SDL_Surface *img) {
 
 int main() {
     init_SDL();
-    
-    SDL_Window *window = SDL_CreateWindow("Scala di grigi con SDL_Surface",
-                                          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                          800, 600, 0);
-
-    // Ottieni la superficie della finestra (dove disegneremo)
-    SDL_Surface *screen = SDL_GetWindowSurface(window);
 
     // Carica l'immagine in una SDL_Surface
     SDL_Surface *image = IMG_Load("../images/img.jpg");
@@ -70,6 +64,22 @@ int main() {
     SDL_FreeSurface(image);
 
     rgb_to_grayscale(converted);
+
+    // Create the window to show the image using all the screen
+    SDL_Window *window = SDL_CreateWindow("Edge detection",
+                                          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                          0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    if (!window) {
+        printf("Errore SDL_CreateWindow: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // Ottieni la superficie della finestra (dove disegneremo)
+    SDL_Surface *screen = SDL_GetWindowSurface(window);
+    if (!screen) {
+        printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
+        return 1;
+    }
 
     // Copia la superficie nella finestra (scalandone correttamente le dimensioni)
     SDL_BlitScaled(converted, NULL, screen, NULL);
