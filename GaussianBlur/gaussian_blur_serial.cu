@@ -104,13 +104,13 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 int main(int argc, char* argv[]) {
     init_SDL();
     
-    SDL_Window *windowNormal = SDL_CreateWindow("Gaussian Blur con SDL_Surface",
+    SDL_Window *windowNormal = SDL_CreateWindow("Gaussian Blur",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        800, 600, 0);
+        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
     
-    SDL_Window *windowBlur = SDL_CreateWindow("Gaussian Blur con SDL_Surface",
+    SDL_Window *windowBlur = SDL_CreateWindow("Gaussian Blur",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        800, 600, 0);
+        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
     
     if (!windowNormal) {
         fprintf(stderr, "Impossibile creare la finestra: %s\n", SDL_GetError());
@@ -171,14 +171,16 @@ int main(int argc, char* argv[]) {
 
     SDL_BlitScaled(image, NULL, screenNormal, NULL);
     SDL_UpdateWindowSurface(windowNormal);
+    SDL_Delay(4000);
+    SDL_DestroyWindow(windowNormal);
+    
     SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
     SDL_UpdateWindowSurface(windowBlur);
     SDL_Delay(4000);
+    SDL_DestroyWindow(windowBlur);
     
     SDL_FreeSurface(blurred);
     SDL_FreeSurface(image);
-    SDL_DestroyWindow(windowBlur);
-    SDL_DestroyWindow(windowNormal);
     IMG_Quit();
     SDL_Quit();
 
