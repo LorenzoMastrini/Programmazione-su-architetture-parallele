@@ -1,25 +1,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdio.h>
-
-
-
-// Initialize SDL modules
-int init_SDL() {
-    // Carica il modulo grafico della libreria
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        printf("Errore SDL_Init: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    // Formati di immagini supportate
-    if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG))) {
-        printf("Errore IMG_Init: %s\n", IMG_GetError());
-        return 1;
-    }
-
-    return 0;
-}
+#include "../utils.h"
 
 
 
@@ -35,8 +17,9 @@ void rgb_to_grayscale(SDL_Surface *img) {
         for (int x = 0; x < img->w; x++) {
             Uint32 p = pixels[y * pixel_per_row + x]; // accedo a ogni pixel
 
-            Uint8 r, g, b;
-            SDL_GetRGB(p, img->format, &r, &g, &b);
+            Uint8 r = (p >> 16) & 0xFF;
+            Uint8 g = (p >> 8) & 0xFF;
+            Uint8 b = p & 0xFF;
 
             // Scala di grigi
             Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
@@ -52,43 +35,27 @@ void rgb_to_grayscale(SDL_Surface *img) {
 int main() {
     init_SDL();
 
-    // Carica l'immagine in una SDL_Surface
-    SDL_Surface *image = IMG_Load("../images/img.jpg");
-    if (!image) {
-        printf("Errore IMG_Load: %s\n", IMG_GetError());
-        return 1;
-    }
+    SDL_Surface *image = load_img("../images/img.jpg");
 
-    // Converti nel formato della finestra per evitare problemi di formato pixel
-    SDL_Surface *converted = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_RGB888, 0); // ogni canale è composto da 8 bit (1 byte) => ogni pixel da 32 bit (4 byte)
-    SDL_FreeSurface(image);
+    rgb_to_grayscale(image);
 
-    rgb_to_grayscale(converted);
+    SDL_Window *window = create_window("RGB to grayscale");
 
-    // Create the window to show the image using all the screen
-    SDL_Window *window = SDL_CreateWindow("Edge detection",
-                                          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                          0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
-    if (!window) {
-        printf("Errore SDL_CreateWindow: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    // Ottieni la superficie della finestra (dove disegneremo)
+    // Get the surface window (where we will paint the image)
     SDL_Surface *screen = SDL_GetWindowSurface(window);
     if (!screen) {
         printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
         return 1;
     }
 
-    // Copia la superficie nella finestra (scalandone correttamente le dimensioni)
-    SDL_BlitScaled(converted, NULL, screen, NULL);
+    // Copy the image in the window surface (correctly scaling the dimensions)
+    SDL_BlitScaled(image, NULL, screen, NULL);
     SDL_UpdateWindowSurface(window);
 
-    SDL_Delay(3000); // Mostra per 3 secondi
+    SDL_Delay(3000); // Show the image for 3 seconds
 
     // Free everything
-    SDL_FreeSurface(converted);
+    SDL_FreeSurface(image);
     SDL_DestroyWindow(window);
     IMG_Quit();
     SDL_Quit();

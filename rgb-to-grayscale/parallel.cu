@@ -1,69 +1,24 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdio.h>
+#include "../utils.h"
 
 
 
-// Initialize SDL modules
-int init_SDL() {
-    // Carica il modulo grafico della libreria
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        printf("Errore SDL_Init: %s\n", SDL_GetError());
-        return 1;
-    }
+__global__ void rgb_to_grayscale_parallel(Uint32* dev_pixels, int dev_w, int dev_h) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dev_w || y >= dev_h) return;
 
-    // Formati di immagini supportate
-    if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG))) {
-        printf("Errore IMG_Init: %s\n", IMG_GetError());
-        return 1;
-    }
+    int idx = y * dev_w + x;
 
-    return 0;
-}
+    Uint32 p = dev_pixels[idx];
+    Uint8 r = (p >> 16) & 0xFF;
+    Uint8 g = (p >> 8) & 0xFF;
+    Uint8 b = p & 0xFF;
+    Uint8 gray = 0.3*r + 0.59*g + 0.11*b;
 
-
-
-SDL_Surface* load_img(const char* path) {
-    // Carica l'immagine in una SDL_Surface
-    SDL_Surface *img = IMG_Load(path);
-    if (!img) {
-        printf("Errore IMG_Load: %s\n", IMG_GetError());
-        exit(1);
-    }
-
-    // Converti nel formato della finestra per evitare problemi di formato pixel
-    SDL_Surface *converted = SDL_ConvertSurfaceFormat(img, SDL_PIXELFORMAT_RGB888, 0); // ogni canale è composto da 8 bit (1 byte) => ogni pixel da 32 bit (4 byte)
-    SDL_FreeSurface(img);
-
-    return converted;
-}
-
-// Conversione in-place di un'immagine da RGB a scala di grigi
-void rgb_to_grayscale(SDL_Surface *img) {
-    // Blocca la superficie per accedere ai pixel
-    SDL_LockSurface(img);
-
-    Uint32 *pixels = (Uint32*) img->pixels;
-    int pixel_per_row = img->pitch / 4; // numero di pixel (ciascuno Uint32) per riga (pitch = #byte per riga)
-
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            Uint32 p = pixels[y * pixel_per_row + x]; // accedo a ogni pixel
-
-            Uint8 r, g, b;
-            SDL_GetRGB(p, img->format, &r, &g, &b);
-
-            // Scala di grigi
-            Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
-            pixels[y * pixel_per_row + x] = (gray << 16) | (gray << 8) | gray;
-        }
-    }
-
-    SDL_UnlockSurface(img);
-}
-
-__global__ void rgb_to_grayscale_parallel(SDL_Surface *img) {
-    
+    dev_pixels[idx] = (gray << 16) | (gray << 8) | gray;
 }
 
 
@@ -73,13 +28,43 @@ int main() {
 
     SDL_Surface *image = load_img("../images/img.jpg");
 
-    //rgb_to_grayscale(converted);
+
+
+    Uint32 *pixels = (Uint32*) image->pixels;
+    int size = image->w * image->h * sizeof(Uint32);
+
+    // Alloca memoria GPU
+    Uint32 *d_pixels;
+    HANDLE_ERROR(cudaMalloc(&d_pixels, size));
+    HANDLE_ERROR(cudaMemcpy(d_pixels, pixels, size, cudaMemcpyHostToDevice));
+
+    dim3 block(16, 16); // 256 thread per blocco
+    dim3 grid((image->w + block.x - 1) / block.x,
+              (image->h + block.y - 1) / block.y);
+    // Lancia il kernel
+    rgb_to_grayscale_parallel<<<grid, block>>>(d_pixels, image->w, image->h);
+    cudaDeviceSynchronize();
+    checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
+
+    // Copia i risultati indietro
+    HANDLE_ERROR(cudaMemcpy(pixels, d_pixels, size, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaFree(d_pixels));
+
+
+
+
+    // Create the window to show the image using all the screen
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
+        printf("Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
+        return 1;
+    }
 
     // Create the window (fullscreen)
     SDL_Window *window = SDL_CreateWindow("Edge detection",
                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                          0, 0, // Dimensions ignored
-                                          SDL_WINDOW_FULLSCREEN_DESKTOP); // Use all the screen space
+                                          dm.w, dm.h, 0);
+    
     if (!window) {
         printf("Errore SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;
