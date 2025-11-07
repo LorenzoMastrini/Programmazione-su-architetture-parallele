@@ -1,29 +1,14 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 #include <stdio.h>
-#include <cuda_runtime.h>
+#include "../utils.h"
 
 #define KERNEL_SIZE 5
 
-// Initialize SDL modules
-int init_SDL() {
-    // Carica il modulo grafico della libreria
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        printf("Errore SDL_Init: %s\n", SDL_GetError());
-        return 1;
-    }
-
-    // Formati di immagini supportate
-    if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG))) {
-        printf("Errore IMG_Init: %s\n", IMG_GetError());
-        return 1;
-    }
-
-    return 0;
-}
+__constant__ double d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
 // Kernel gaussiano 5x5 pre-calcolato e normalizzato
-double kernel[KERNEL_SIZE][KERNEL_SIZE] = {
+__host__ double h_kernel[KERNEL_SIZE][KERNEL_SIZE] = {
     {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273},
     {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
     {7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273},
@@ -47,6 +32,37 @@ void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
     *(Uint32 *)p = pixel;
 }
 
+__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height)
+        return;
+
+    int half = KERNEL_SIZE / 2;
+
+    double r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
+
+    for (int ky = -half; ky <= half; ky++) {
+        for (int kx = -half; kx <= half; kx++) {
+            int px = min(max(x + kx, 0), width - 1);
+            int py = min(max(y + ky, 0), height - 1);
+
+            int pixel_index = py * pitch + px * 4;
+
+            double weight = d_kernel[(ky + half) * KERNEL_SIZE + (kx + half)];
+            r_sum += input[pixel_index + 0] * weight;
+            g_sum += input[pixel_index + 1] * weight;
+            b_sum += input[pixel_index + 2] * weight;
+        }
+    }
+
+    int out_index = y * pitch + x * 4;
+    output[out_index + 0] = (unsigned char)r_sum;
+    output[out_index + 1] = (unsigned char)g_sum;
+    output[out_index + 2] = (unsigned char)b_sum;  
+}
+
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
@@ -60,40 +76,30 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
 
-    int half = KERNEL_SIZE / 2;
-    for (int y = 0; y < src->h; y++) {
-        for (int x = 0; x < src->w; x++) {
-            // Se il kernel uscirebbe fuori, copia il pixel originale
-            /*if (x < half || x >= src->w - half || y < half || y >= src->h - half) {
-                Uint32 pixel = get_pixel(src, x, y);
-                put_pixel(dst, x, y, pixel);
-                continue;
-            }*/
-            double r_sum = 0, g_sum = 0, b_sum = 0;
-            for (int ky = -half; ky <= half; ky++) {
-                for (int kx = -half; kx <= half; kx++) {
-                    int px = x + kx;
-                    int py = y + ky;
-                    Uint32 pixel = get_pixel(src, px, py);
+    int width = src->w;
+    int height = src->h;
+    int pitch = src->pitch;
 
-                    Uint8 r, g, b, a;
-                    SDL_GetRGBA(pixel, src->format, &r, &g, &b, &a);
+    size_t bytes = height * pitch;
+    unsigned char *d_input, *d_output;
 
-                    double weight = kernel[ky + half][kx + half];
-                    r_sum += r * weight;
-                    g_sum += g * weight;
-                    b_sum += b * weight;
-                }
-            }
-            Uint8 r_blur = (Uint8)r_sum;
-            Uint8 g_blur = (Uint8)g_sum;
-            Uint8 b_blur = (Uint8)b_sum;
-            Uint8 a = 255;
+    HANDLE_ERROR(cudaMalloc(&d_input, bytes));
+    HANDLE_ERROR(cudaMalloc(&d_output, bytes));
 
-            Uint32 new_pixel = SDL_MapRGBA(dst->format, r_blur, g_blur, b_blur, a);
-            put_pixel(dst, x, y, new_pixel);
-        }
-    }
+    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
+    HANDLE_ERROR(cudaMemcpy(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(double), cudaMemcpyHostToDevice));    
+    
+    dim3 block(16, 16); // 256 thread per blocco
+    dim3 grid((width + block.x - 1) / block.x,
+              (height + block.y - 1) / block.y);
+    
+    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, width, height, pitch);
+    cudaDeviceSynchronize();
+    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+
+    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_output, bytes, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaFree(d_input));
+    HANDLE_ERROR(cudaFree(d_output));
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);
@@ -104,13 +110,9 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 int main(int argc, char* argv[]) {
     init_SDL();
     
-    SDL_Window *windowNormal = SDL_CreateWindow("Gaussian Blur",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    SDL_Window *windowNormal = create_window("Gaussian Blur");
     
-    SDL_Window *windowBlur = SDL_CreateWindow("Gaussian Blur",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    SDL_Window *windowBlur = create_window("Gaussian Blur");
     
     if (!windowNormal) {
         fprintf(stderr, "Impossibile creare la finestra: %s\n", SDL_GetError());
@@ -137,25 +139,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Surface* image = IMG_Load("../images/Lenna_(test_image).png");
-    if (!image) {
-        fprintf(stderr, "Impossibile caricare immagine: %s\n", IMG_GetError());
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    // Converti l'immagine in 32-bit RGBA per garantire 4 byte per pixel
-    SDL_Surface* image32 = SDL_ConvertSurfaceFormat(image, SDL_PIXELFORMAT_RGBA32, 0);
-    if (!image32) {
-        fprintf(stderr, "Impossibile convertire l'immagine in RGBA32: %s\n", SDL_GetError());
-        SDL_FreeSurface(image);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    SDL_FreeSurface(image);
-    image = image32;
+    SDL_Surface* image = load_img("../images/Lenna_(test_image).png");
 
     SDL_Surface* blurred = gaussian_blur(image);
     if (!blurred) {
