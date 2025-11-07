@@ -35,9 +35,20 @@ void rgb_to_grayscale(SDL_Surface *img) {
 int main() {
     init_SDL();
 
-    SDL_Surface *image = load_img("../images/img.jpg");
+    SDL_Surface *image = load_img("images/img.jpg");
 
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
     rgb_to_grayscale(image);
+    cudaEventRecord(stop);
+
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    
 
     SDL_Window *window = create_window("RGB to grayscale");
 
@@ -59,5 +70,7 @@ int main() {
     SDL_DestroyWindow(window);
     IMG_Quit();
     SDL_Quit();
+
+    printf("Kernel time: %.3f ms\n", ms);
     return 0;
 }
