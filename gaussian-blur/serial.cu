@@ -1,14 +1,11 @@
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
 #include <stdio.h>
 #include "../utils.h"
 
 #define KERNEL_SIZE 5
 
-__constant__ double d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
 // Kernel gaussiano 5x5 pre-calcolato e normalizzato
-__host__ double h_kernel[KERNEL_SIZE][KERNEL_SIZE] = {
+double kernel[KERNEL_SIZE][KERNEL_SIZE] = {
     {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273},
     {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
     {7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273},
@@ -32,37 +29,6 @@ void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
     *(Uint32 *)p = pixel;
 }
 
-__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x >= width || y >= height)
-        return;
-
-    int half = KERNEL_SIZE / 2;
-
-    double r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
-
-    for (int ky = -half; ky <= half; ky++) {
-        for (int kx = -half; kx <= half; kx++) {
-            int px = min(max(x + kx, 0), width - 1);
-            int py = min(max(y + ky, 0), height - 1);
-
-            int pixel_index = py * pitch + px * 4;
-
-            double weight = d_kernel[(ky + half) * KERNEL_SIZE + (kx + half)];
-            r_sum += input[pixel_index + 0] * weight;
-            g_sum += input[pixel_index + 1] * weight;
-            b_sum += input[pixel_index + 2] * weight;
-        }
-    }
-
-    int out_index = y * pitch + x * 4;
-    output[out_index + 0] = (unsigned char)r_sum;
-    output[out_index + 1] = (unsigned char)g_sum;
-    output[out_index + 2] = (unsigned char)b_sum;  
-}
-
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
@@ -76,30 +42,39 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
 
-    int width = src->w;
-    int height = src->h;
-    int pitch = src->pitch;
+    int half = KERNEL_SIZE / 2;
+    for (int y = 0; y < src->h; y++) {
+        for (int x = 0; x < src->w; x++) {
+            // Se il kernel uscirebbe fuori, copia il pixel originale
+            /*if (x < half || x >= src->w - half || y < half || y >= src->h - half) {
+                Uint32 pixel = get_pixel(src, x, y);
+                put_pixel(dst, x, y, pixel);
+                continue;
+            }*/
+            double r_sum = 0, g_sum = 0, b_sum = 0;
+            for (int ky = -half; ky <= half; ky++) {
+                for (int kx = -half; kx <= half; kx++) {
+                    int px = x + kx;
+                    int py = y + ky;
+                    Uint32 pixel = get_pixel(src, px, py);
 
-    size_t bytes = height * pitch;
-    unsigned char *d_input, *d_output;
+                    Uint8 r, g, b, a;
+                    SDL_GetRGB(pixel, src->format, &r, &g, &b);
 
-    HANDLE_ERROR(cudaMalloc(&d_input, bytes));
-    HANDLE_ERROR(cudaMalloc(&d_output, bytes));
+                    double weight = kernel[ky + half][kx + half];
+                    r_sum += r * weight;
+                    g_sum += g * weight;
+                    b_sum += b * weight;
+                }
+            }
+            Uint8 r_blur = (Uint8)r_sum;
+            Uint8 g_blur = (Uint8)g_sum;
+            Uint8 b_blur = (Uint8)b_sum;
 
-    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
-    HANDLE_ERROR(cudaMemcpy(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(double), cudaMemcpyHostToDevice));    
-    
-    dim3 block(16, 16); // 256 thread per blocco
-    dim3 grid((width + block.x - 1) / block.x,
-              (height + block.y - 1) / block.y);
-    
-    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, width, height, pitch);
-    cudaDeviceSynchronize();
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
-
-    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_output, bytes, cudaMemcpyDeviceToHost));
-    HANDLE_ERROR(cudaFree(d_input));
-    HANDLE_ERROR(cudaFree(d_output));
+            Uint32 new_pixel = SDL_MapRGB(dst->format, r_blur, g_blur, b_blur);
+            put_pixel(dst, x, y, new_pixel);
+        }
+    }
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);

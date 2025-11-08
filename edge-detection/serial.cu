@@ -1,9 +1,6 @@
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
 #include <stdio.h>
 #include <math.h>
 #include "../utils.h"
-
 
 
 Uint8 get_gray(Uint32 pixel, SDL_PixelFormat *format) {
@@ -23,7 +20,7 @@ Uint32 make_pixel(SDL_PixelFormat *format, Uint8 gray) {
 int main(int argc, char *argv[]) {
     init_SDL();
 
-    SDL_Surface *image = load_img("../images/img.jpg");
+    SDL_Surface *image = load_img("./images/img.jpg");
 
     SDL_Surface *edges = SDL_CreateRGBSurface(0, image->w, image->h, 32,
                                               0x00FF0000,

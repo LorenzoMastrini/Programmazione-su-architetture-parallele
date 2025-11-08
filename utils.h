@@ -1,6 +1,18 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#ifndef __AMX_TILE__
+#define __AMX_TILE__ 0
+#endif
+
+#ifdef __CUDACC__
+#define __builtin_ia32_ldtilecfg(x) ((void)0)
+#define __builtin_ia32_sttilecfg(x) ((void)0)
+#define __builtin_ia32_tileloadd64(x, y, z) ((void)0)
+#define __builtin_ia32_tilestored64(x, y, z) ((void)0)
+#define __builtin_ia32_tilezero(x) ((void)0)
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <SDL2/SDL.h>

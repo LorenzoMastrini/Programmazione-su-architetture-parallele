@@ -20,7 +20,8 @@ GB_PARALLEL_BIN=$(GBDIR)/gaussian_blur_naiveParallel
 
 # Flags compilazione
 NVCC=nvcc
-NVCC_FLAGS=`sdl2-config --cflags --libs` -lSDL2_image
+NVCC_FLAGS=-Xcompiler -march=x86-64 -Xcompiler -mno-amx-tile -Xcompiler -D__AMX_TILE__=0 `sdl2-config --cflags --libs` -lSDL2_image
+
 
 all: $(EDGE_SERIAL_BIN) $(RGB_SERIAL_BIN) $(RGB_PARALLEL_BIN) $(GB_SERIAL_BIN) $(GB_PARALLEL_BIN)
 
@@ -33,10 +34,10 @@ $(RGB_SERIAL_BIN): $(RGBSERIAL) $(UTILS)
 $(RGB_PARALLEL_BIN): $(RGBPARALLEL) $(UTILS)
 	$(NVCC) $^ -o $@ $(NVCC_FLAGS)
 
-$(GB_SERIAL_BIN): $(GBSERIAL)
+$(GB_SERIAL_BIN): $(GBSERIAL) $(UTILS)
 	$(NVCC) $^ -o $@ $(NVCC_FLAGS)
 
-$(GB_PARALLEL_BIN): $(GBPARALLEL)
+$(GB_PARALLEL_BIN): $(GBPARALLEL) $(UTILS)
 	$(NVCC) $^ -o $@ $(NVCC_FLAGS)
 
 .PHONY: all clean
