@@ -1,13 +1,13 @@
 # Percorsi delle directory
 EDGEDIR=edge-detection
-GBDIR=GaussianBlur
+GBDIR=gaussian-blur
 RGBDIR=rgb-to-grayscale
 UTILS=utils.cu
 
 # File sorgenti
 EDGESERIAL=$(EDGEDIR)/serial.cu
-GBSERIAL=$(GBDIR)/gaussian_blur_serial.cu
-GBPARALLEL=$(GBDIR)/gaussian_blur_naiveParallel.cu
+GBSERIAL=$(GBDIR)/serial.cu
+GBPARALLEL=$(GBDIR)/naive-parallel.cu
 RGBSERIAL=$(RGBDIR)/serial.cu
 RGBPARALLEL=$(RGBDIR)/parallel.cu
 
@@ -15,8 +15,8 @@ RGBPARALLEL=$(RGBDIR)/parallel.cu
 EDGE_SERIAL_BIN=$(EDGEDIR)/serial
 RGB_SERIAL_BIN=$(RGBDIR)/serial
 RGB_PARALLEL_BIN=$(RGBDIR)/parallel
-GB_SERIAL_BIN=$(GBDIR)/gaussian_blur_serial
-GB_PARALLEL_BIN=$(GBDIR)/gaussian_blur_naiveParallel
+GB_SERIAL_BIN=$(GBDIR)/serial
+GB_PARALLEL_BIN=$(GBDIR)/naive-parallel
 
 # Flags compilazione
 NVCC=nvcc

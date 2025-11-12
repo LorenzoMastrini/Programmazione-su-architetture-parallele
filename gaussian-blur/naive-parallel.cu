@@ -6,13 +6,13 @@
 __constant__ double d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
 
-// Kernel gaussiano 5x5 pre-calcolato e normalizzato
-double h_kernel[KERNEL_SIZE][KERNEL_SIZE] = {
-    {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273},
-    {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
-    {7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273},
-    {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
-    {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273}
+// Kernel gaussiano 5x5 pre-calcolato e normalizzato (array 1D in ordine row-major)
+double h_kernel[KERNEL_SIZE * KERNEL_SIZE] = {
+    1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273,
+    4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273,
+    7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273,
+    4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273,
+    1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273
 };
 
 // Funzioni per leggere e scrivere pixel da SDL_Surface 32bit
@@ -88,14 +88,8 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
     
-    // Converti h_kernel da 2D a 1D per copiarlo nella memoria costante
-    double h_kernel_1d[KERNEL_SIZE * KERNEL_SIZE];
-    for (int i = 0; i < KERNEL_SIZE; i++) {
-        for (int j = 0; j < KERNEL_SIZE; j++) {
-            h_kernel_1d[i * KERNEL_SIZE + j] = h_kernel[i][j];
-        }
-    }
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel, h_kernel_1d, KERNEL_SIZE * KERNEL_SIZE * sizeof(double)));    
+    // Copia il kernel nella memoria costante della GPU
+    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(double)));    
     
     dim3 block(16, 16); // 256 thread per blocco
     dim3 grid((width + block.x - 1) / block.x,
@@ -118,21 +112,38 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 int main(int argc, char* argv[]) {
     init_SDL();
     
-    SDL_Window *windowNormal = create_window("Gaussian Blur");
-    
-    SDL_Window *windowBlur = create_window("Gaussian Blur");
-    
-    if (!windowNormal) {
-        fprintf(stderr, "Impossibile creare la finestra: %s\n", SDL_GetError());
+    // Ottieni le dimensioni dello schermo per posizionare le finestre
+    SDL_DisplayMode dm;
+    if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
+        fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
         IMG_Quit();
         SDL_Quit();
         return 1;
     }
     
+    SDL_Window *windowNormal = create_window("Immagine Originale");
+    SDL_Window *windowBlur = create_window("Immagine Sfocata");
+    
+    if (!windowNormal || !windowBlur) {
+        fprintf(stderr, "Impossibile creare le finestre: %s\n", SDL_GetError());
+        if (windowNormal) SDL_DestroyWindow(windowNormal);
+        if (windowBlur) SDL_DestroyWindow(windowBlur);
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
+    }
+    
+    // Posiziona le finestre una di fianco all'altra
+    // Prima finestra a sinistra
+    SDL_SetWindowPosition(windowNormal, 0, 0);
+    // Seconda finestra a destra (metà schermo)
+    SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
+    
     SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
     if (!screenNormal) {
         fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
         SDL_DestroyWindow(windowNormal);
+        SDL_DestroyWindow(windowBlur);
         IMG_Quit();
         SDL_Quit();
         return 1;
@@ -141,6 +152,7 @@ int main(int argc, char* argv[]) {
     SDL_Surface *screenBlur = SDL_GetWindowSurface(windowBlur);
     if (!screenBlur) {
         fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
+        SDL_DestroyWindow(windowNormal);
         SDL_DestroyWindow(windowBlur);
         IMG_Quit();
         SDL_Quit();
@@ -153,6 +165,7 @@ int main(int argc, char* argv[]) {
     if (!blurred) {
         fprintf(stderr, "Errore durante il Gaussian blur\n");
         SDL_FreeSurface(image);
+        SDL_DestroyWindow(windowNormal);
         SDL_DestroyWindow(windowBlur);
         IMG_Quit();
         SDL_Quit();
@@ -161,14 +174,17 @@ int main(int argc, char* argv[]) {
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
 
+    // Mostra entrambe le immagini contemporaneamente
     SDL_BlitScaled(image, NULL, screenNormal, NULL);
     SDL_UpdateWindowSurface(windowNormal);
-    SDL_Delay(4000);
-    SDL_DestroyWindow(windowNormal);
     
     SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
     SDL_UpdateWindowSurface(windowBlur);
+    
+    // Attendi prima di chiudere
     SDL_Delay(4000);
+    
+    SDL_DestroyWindow(windowNormal);
     SDL_DestroyWindow(windowBlur);
     
     SDL_FreeSurface(blurred);
