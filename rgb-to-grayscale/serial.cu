@@ -31,7 +31,6 @@ void rgb_to_grayscale(SDL_Surface *img) {
 }
 
 
-
 int main() {
     init_SDL();
 
