@@ -136,7 +136,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Surface* image = load_img("../images/Lenna_(test_image).png");
+    SDL_Surface* image = load_img("images/Lenna_(test_image).png");
     
     cudaEventRecord(start);
     SDL_Surface* blurred = gaussian_blur(image);
