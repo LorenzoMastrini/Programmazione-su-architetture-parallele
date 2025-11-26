@@ -20,7 +20,7 @@ GB_PARALLEL_BIN=$(GBDIR)/naive-parallel
 
 # Flags compilazione
 NVCC=nvcc
-NVCC_FLAGS=`sdl2-config --cflags --libs` -lSDL2_image 
+NVCC_FLAGS=`sdl2-config --cflags --libs` -lSDL2_image -arch=compute_89 -code=sm_89 # MODIFY THIS LAST TWO FLAGS WITH YOUR COMPUTE CAPABILITY
 
 
 all: $(EDGE_SERIAL_BIN) $(RGB_SERIAL_BIN) $(RGB_PARALLEL_BIN) $(GB_SERIAL_BIN) $(GB_PARALLEL_BIN)

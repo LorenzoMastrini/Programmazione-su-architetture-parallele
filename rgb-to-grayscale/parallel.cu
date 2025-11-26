@@ -26,7 +26,7 @@ __global__ void rgb_to_grayscale_parallel(Uint32* dev_pixels, int dev_w, int dev
 int main() {
     init_SDL();
 
-    SDL_Surface *image = load_img("/images/img.jpg");
+    SDL_Surface *image = load_img("images/img.jpg");
 
 
     // profiling
