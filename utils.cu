@@ -49,7 +49,7 @@ SDL_Surface* load_img(const char* path) {
     }
 
     // Convert the image pixels format to unify it
-    SDL_Surface *converted = SDL_ConvertSurfaceFormat(img, SDL_PIXELFORMAT_RGB888, 0); // Each channel is made of 8 bit (1 byte) => each pixel is 32 bits (4 byte)
+    SDL_Surface *converted = SDL_ConvertSurfaceFormat(img, SDL_PIXELFORMAT_RGBA32, 0); // each pixel is 32 bits (4 byte)
     SDL_FreeSurface(img);
     return converted;
 }

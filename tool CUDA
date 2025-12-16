@@ -1,0 +1,16 @@
+- device memory allocata come linear memory o CUDA array
+- diversi tipi di memoria (register, local, shared, global, constant, texture)
+- introdurre padding per garantire l’allineamento richiesto per array 2D o 3D: cudaMallocPitch() e cudaMalloc3D()
+- modalità di allocazione: static (fatta dall'host) e dynamic (fatta dal kernel)
+- Tipi di trasferimento per Global Memory: (Pageable memory, Page-Locked (o pinned), Write-combined memory (da usare se l'host fa solo scritture), Mapped memory)
+- CUDA stream
+shared memory
+persisting memory
+operazioni atomiche
+accessi coalescenti
+warp aggregation
+
+
+da provare: zero-copy
+
+4080 SUPER theoretical bandwidth: 736.3 GB/s
