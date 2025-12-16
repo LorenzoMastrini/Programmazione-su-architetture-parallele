@@ -110,10 +110,11 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 }
 
 int main(int argc, char* argv[]) {
-    init_SDL();
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
+    cudaEventRecord(start);
+    init_SDL();
 
     // Ottieni le dimensioni dello schermo per posizionare le finestre
     SDL_DisplayMode dm;
@@ -162,11 +163,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Surface* image = load_img("images/Lenna_(test_image).png");
+    SDL_Surface* image = load_img("images/img-gaussianblur.jpg");
     
-    cudaEventRecord(start);
     SDL_Surface* blurred = gaussian_blur(image);
-    cudaEventRecord(stop);
     if (!blurred) {
         fprintf(stderr, "Errore durante il Gaussian blur\n");
         SDL_FreeSurface(image);
@@ -176,9 +175,7 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
+
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
 
@@ -200,7 +197,12 @@ int main(int argc, char* argv[]) {
     IMG_Quit();
     SDL_Quit();
 
-    printf("Kernel time: %.3f ms\n", ms);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    printf("Execution time: %.3f ms\n", ms-4000);
+
     return 0;
 }
 
