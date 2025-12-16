@@ -42,13 +42,15 @@ int main(void) {
         printf("Total constant Mem: %ld\n", prop.totalConstMem);
         printf("Max mem pitch: %ld\n", prop.memPitch);
         printf("Texture Alignment: %ld\n", prop.textureAlignment);
+        printf("Async engine count: %d\n", prop.asyncEngineCount);
 
-        printf("--- MP Information for device %d ---\n", i);
+        printf("\n--- MP Information for device %d ---\n", i);
         printf("Multiprocessor count: %d\n", prop.multiProcessorCount);
         printf("Shared mem per mp: %ld\n", prop.sharedMemPerBlock);
         printf("Registers per mp: %d\n", prop.regsPerBlock);
         printf("Threads in warp: %d\n", prop.warpSize);
         printf("Max threads per block: %d\n", prop.maxThreadsPerBlock);
+        printf("Max threads per MP: %d\n", prop.maxThreadsPerMultiProcessor);
         printf("Max thread dimensions: (%d, %d, %d)\n",
                prop.maxThreadsDim[0], prop.maxThreadsDim[1], prop.maxThreadsDim[2]);
         printf("Max grid dimensions: (%d, %d, %d)\n\n",

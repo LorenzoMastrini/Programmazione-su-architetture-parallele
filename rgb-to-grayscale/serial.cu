@@ -1,5 +1,7 @@
 #include "../utils.h"
 
+#define SHOW_IMAGE_FOR 3000 // How much time to show the image (3000 ms = 3 seconds)
+
 
 
 // Conversione in-place di un'immagine da RGB a scala di grigi
@@ -8,11 +10,10 @@ void rgb_to_grayscale(SDL_Surface *img) {
     SDL_LockSurface(img);
 
     Uint32 *pixels = (Uint32*) img->pixels;
-    int pixel_per_row = img->pitch / 4; // numero di pixel (ciascuno Uint32) per riga (pitch = #byte per riga)
+    int pixel_per_row = img->pitch / 4; // numero di pixel (ciascuno Uint32, 1byte) per riga (pitch = #byte per riga)
 
-    for (int y = 0; y < img->h; y++) {
-        for (int x = 0; x < img->w; x++) {
-            Uint32 p = pixels[y * pixel_per_row + x]; // accedo a ogni pixel
+    for(int i = 0; i < pixel_per_row * img->h; i++) {
+        Uint32 p = pixels[i]; // accedo a ogni pixel
 
             Uint8 r = (p >> 16) & 0xFF;
             Uint8 g = (p >> 8) & 0xFF;
@@ -20,8 +21,7 @@ void rgb_to_grayscale(SDL_Surface *img) {
 
             // Scala di grigi
             Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
-            pixels[y * pixel_per_row + x] = (gray << 16) | (gray << 8) | gray;
-        }
+            pixels[i] = (gray << 16) | (gray << 8) | gray;
     }
 
     SDL_UnlockSurface(img);
@@ -33,19 +33,8 @@ int main() {
 
     SDL_Surface *image = load_img("images/img.jpg");
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
     rgb_to_grayscale(image);
-    cudaEventRecord(stop);
-
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
     
-
     SDL_Window *window = create_window("RGB to grayscale");
 
     // Get the surface window (where we will paint the image)
@@ -59,7 +48,7 @@ int main() {
     SDL_BlitScaled(image, NULL, screen, NULL);
     SDL_UpdateWindowSurface(window);
 
-    SDL_Delay(3000); // Show the image for 3 seconds
+    SDL_Delay(SHOW_IMAGE_FOR); // Show the image for 3 seconds
 
     // Free everything
     SDL_FreeSurface(image);
@@ -67,6 +56,5 @@ int main() {
     IMG_Quit();
     SDL_Quit();
 
-    printf("Kernel time: %.3f ms\n", ms);
     return 0;
 }

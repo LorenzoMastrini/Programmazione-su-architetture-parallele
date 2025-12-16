@@ -5,4 +5,5 @@
 *.cubin
 *.fatbin
 serial
-parallel
+naive-parallel
+optimized-parallel
