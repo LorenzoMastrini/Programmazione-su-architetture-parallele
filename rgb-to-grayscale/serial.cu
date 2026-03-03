@@ -19,7 +19,7 @@ void rgb_to_grayscale(SDL_Surface *img) {
             Uint8 g = (p >> 8) & 0xFF;
             Uint8 b = p & 0xFF;
 
-            // Scala di grigi
+            // Grayscale (formula based on non-linear human perception of color)
             Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
             pixels[i] = (gray << 16) | (gray << 8) | gray;
     }
@@ -33,7 +33,22 @@ int main() {
 
     SDL_Surface *image = load_img("images/img.jpg");
 
+    // profiling
+    cudaEvent_t start, stop;
+    float time;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
+
     rgb_to_grayscale(image);
+    
+    // profiling
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time, start, stop);
+    printf("Kernel time: %.3f ms\n", time);
+    HANDLE_ERROR(cudaEventDestroy(start));
+    HANDLE_ERROR(cudaEventDestroy(stop));
     
     SDL_Window *window = create_window("RGB to grayscale");
 

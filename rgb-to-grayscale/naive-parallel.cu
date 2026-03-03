@@ -60,13 +60,15 @@ int main() {
     checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
 
     // Copy back the results
-    HANDLE_ERROR(cudaMemcpy(image->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // implicit barrier
+    HANDLE_ERROR(cudaMemcpy(image->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // Implicit barrier
+
+    HANDLE_ERROR(cudaFree(d_pixels));
 
     // profiling
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.3f ms\n", time);
+    printf("Kernel time: %.2f ms\n", time);
     HANDLE_ERROR(cudaEventDestroy(start));
     HANDLE_ERROR(cudaEventDestroy(stop));
     
@@ -88,7 +90,6 @@ int main() {
     SDL_Delay(SHOW_IMAGE_FOR); // Show for 3 seconds
 
     // Free everything
-    HANDLE_ERROR(cudaFree(d_pixels));
     SDL_FreeSurface(image);
     SDL_DestroyWindow(window);
     IMG_Quit();
