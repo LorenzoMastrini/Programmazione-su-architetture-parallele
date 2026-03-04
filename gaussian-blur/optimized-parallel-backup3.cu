@@ -1,14 +1,13 @@
-#include "../utils.h"
+#include "../utils.cu"
 #include <stdio.h>
 
-#define KERNEL_SIZE 5
+#define KERNEL_SIZE 21
 #define BLOCK_SIZE 16
-#define HALF 2
+#define HALF 10
+#define SIGMA 5.0
 
 //__constant__ float d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 __constant__ float d_kernel_1d[KERNEL_SIZE];
-
-
 
 // Kernel gaussiano 5x5 pre-calcolato e normalizzato (array 1D in ordine row-major)
 /*double h_kernel[KERNEL_SIZE * KERNEL_SIZE] = {
@@ -19,24 +18,31 @@ __constant__ float d_kernel_1d[KERNEL_SIZE];
     1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273
 };*/
 
-float h_kernel_1d[KERNEL_SIZE] = {
+/*float h_kernel_1d[KERNEL_SIZE] = {
     1.0f/16, 4.0f/16, 6.0f/16, 4.0f/16, 1.0f/16
-};
+};*/
 
-// Funzioni per leggere e scrivere pixel da SDL_Surface 32bit
-Uint32 get_pixel(SDL_Surface *surface, int x, int y) {
-    if (x < 0) x = 0;
-    if (x >= surface->w) x = surface->w - 1;
-    if (y < 0) y = 0;
-    if (y >= surface->h) y = surface->h - 1;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    return *(Uint32 *)p;
+float h_kernel_1d[KERNEL_SIZE];
+
+void generate_gaussian_kernel() {
+    double sum = 0.0;
+    for (int i = -HALF; i <= HALF; i++) {
+        double v = exp(-(i*i) / (2.0 * SIGMA * SIGMA));
+        h_kernel_1d[i + HALF] = v;
+        sum += v;
+    }
+    for (int i = 0; i < KERNEL_SIZE; i++)
+        h_kernel_1d[i] /= sum;
 }
 
-void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
-    if (x < 0 || x >= surface->w || y < 0 || y >= surface->h) return;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    *(Uint32 *)p = pixel;
+void init_gaussian_kernel_once() {
+    static bool initialized = false;
+    if (initialized) return;
+
+    generate_gaussian_kernel();
+    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
+
+    initialized = true;
 }
 
 /*__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
@@ -46,18 +52,18 @@ void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
     if (x >= width || y >= height)
         return;
 
-    int half = KERNEL_SIZE / 2;
+    int HALF = KERNEL_SIZE / 2;
 
     float r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
 
-    for (int ky = -half; ky <= half; ky++) {
-        for (int kx = -half; kx <= half; kx++) {
+    for (int ky = -HALF; ky <= HALF; ky++) {
+        for (int kx = -HALF; kx <= HALF; kx++) {
             int px = min(max(x + kx, 0), width - 1);
             int py = min(max(y + ky, 0), height - 1);
 
             int pixel_index = py * pitch + px * 4;
 
-            float weight = d_kernel[(ky + half) * KERNEL_SIZE + (kx + half)];
+            float weight = d_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
             r_sum += input[pixel_index + 0] * weight;
             g_sum += input[pixel_index + 1] * weight;
             b_sum += input[pixel_index + 2] * weight;
@@ -122,96 +128,6 @@ __global__ void gaussian_vertical(unsigned char *input, unsigned char *output, i
 }
 
 
-/*__global__ void gaussian_blur_kernel_shared(unsigned char *input, unsigned char *output, int width, int height, int pitch){
-    // Padding per evitare bank conflicts: aggiungiamo 1 elemento per allineare a 4 bytes
-    __shared__ unsigned char tile[BLOCK_SIZE + 2*HALF][BLOCK_SIZE + 2*HALF][4]; // RGB + padding, alpha copiato dopo
-
-    int tx = threadIdx.x;
-    int ty = threadIdx.y;
-
-    int x = blockIdx.x * BLOCK_SIZE + tx;
-    int y = blockIdx.y * BLOCK_SIZE + ty;
-
-    // Coord nel tile condiviso
-    int tile_x = tx + HALF;
-    int tile_y = ty + HALF;
-
-    // Carica i pixel centrali nel tile condiviso
-    for (int c = 0; c < 3; c++) {
-        if (x < width && y < height)
-            tile[tile_y][tile_x][c] = input[y*pitch + x*4 + c];
-        else
-            tile[tile_y][tile_x][c] = 0;
-    }
-
-    // Carica i bordi (halo)
-    if (tx < HALF) {
-        for (int c = 0; c < 3; c++) {
-            // sinistra
-            int xx = max(x - HALF, 0);
-            int yy = y;
-            tile[tile_y][tile_x - HALF][c] = (yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-            // destra
-            xx = min(x + BLOCK_SIZE, width-1);
-            tile[tile_y][tile_x + BLOCK_SIZE][c] = (yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-        }
-    }
-
-    if (ty < HALF) {
-        for (int c = 0; c < 3; c++) {
-            // sopra
-            int xx = x;
-            int yy = max(y - HALF, 0);
-            tile[tile_y - HALF][tile_x][c] = (xx < width) ? input[yy*pitch + xx*4 + c] : 0;
-            // sotto
-            yy = min(y + BLOCK_SIZE, height-1);
-            tile[tile_y + BLOCK_SIZE][tile_x][c] = (xx < width) ? input[yy*pitch + xx*4 + c] : 0;
-        }
-    }
-
-    // Carica gli angoli del bordo (halo diagonale)
-    if (tx < HALF && ty < HALF) {
-        for (int c = 0; c < 3; c++) {
-            int xx = max(x - HALF, 0);
-            int yy = max(y - HALF, 0);
-            tile[tile_y - HALF][tile_x - HALF][c] = (xx < width && yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-
-            xx = min(x + BLOCK_SIZE, width-1);
-            yy = max(y - HALF, 0);
-            tile[tile_y - HALF][tile_x + BLOCK_SIZE][c] = (xx < width && yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-
-            xx = max(x - HALF, 0);
-            yy = min(y + BLOCK_SIZE, height-1);
-            tile[tile_y + BLOCK_SIZE][tile_x - HALF][c] = (xx < width && yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-
-            xx = min(x + BLOCK_SIZE, width-1);
-            yy = min(y + BLOCK_SIZE, height-1);
-            tile[tile_y + BLOCK_SIZE][tile_x + BLOCK_SIZE][c] = (xx < width && yy < height) ? input[yy*pitch + xx*4 + c] : 0;
-        }
-    }
-
-    __syncthreads(); // sincronizza tutti i thread del blocco
-
-    if (x >= width || y >= height) return;
-
-    float r_sum = 0.0f, g_sum = 0.0f, b_sum = 0.0f;
-    // Convoluzione 5x5 usando dati in shared memory
-    for (int ky = -HALF; ky <= HALF; ky++) {
-        for (int kx = -HALF; kx <= HALF; kx++) {
-            float weight = d_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
-            r_sum += tile[tile_y + ky][tile_x + kx][0] * weight;
-            g_sum += tile[tile_y + ky][tile_x + kx][1] * weight;
-            b_sum += tile[tile_y + ky][tile_x + kx][2] * weight;
-        }
-    }
-
-    int out_index = y*pitch + x*4;
-    output[out_index + 0] = (unsigned char)r_sum;
-    output[out_index + 1] = (unsigned char)g_sum;
-    output[out_index + 2] = (unsigned char)b_sum;
-    output[out_index + 3] = input[out_index + 3]; // preserva alpha
-}*/
-
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
@@ -230,7 +146,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     int pitch = src->pitch;
 
     size_t bytes = height * pitch;
-    unsigned char *d_input, *d_output, *d_temp;
+    unsigned char *d_input, *d_temp;
     
     /*float h_kernel_float[KERNEL_SIZE * KERNEL_SIZE];
     for(int i=0;i<KERNEL_SIZE*KERNEL_SIZE;i++)
@@ -238,27 +154,32 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     
     // Alloca memoria GPU
     HANDLE_ERROR(cudaMalloc(&d_input, bytes));
-    HANDLE_ERROR(cudaMalloc(&d_output, bytes));
     HANDLE_ERROR(cudaMalloc(&d_temp, bytes));
 
     HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
-    
-    // Copia il kernel nella memoria costante della GPU
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));    
+    init_gaussian_kernel_once();
     
     dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
     
-    //gaussian_blur_kernel_shared<<<grid, block>>>(d_input, d_output, width, height, pitch);
-    //gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, width, height, pitch);
-    gaussian_horizontal<<<grid, block>>>(d_input, d_temp, width, height, pitch);
-    cudaDeviceSynchronize();
-    gaussian_vertical<<<grid, block>>>(d_temp, d_output, width, height, pitch);
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
 
-    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_output, bytes, cudaMemcpyDeviceToHost));
+    gaussian_horizontal<<<grid, block>>>(d_input, d_temp, width, height, pitch);
+    gaussian_vertical<<<grid, block>>>(d_temp, d_input, width, height, pitch);
+    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    printf("Execution time: %.3f ms\n", ms-4000);
+
+    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaFree(d_input));
-    HANDLE_ERROR(cudaFree(d_output));
+    HANDLE_ERROR(cudaFree(d_temp));
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);
@@ -267,11 +188,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 }
 
 int main(int argc, char* argv[]) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
-    
     init_SDL();
     
     // Ottieni le dimensioni dello schermo per posizionare le finestre
@@ -321,7 +237,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Surface* image = load_img("images/img-gaussianblur.jpg");
+    SDL_Surface* image = load_img("images/img.jpg");
     
     
     SDL_Surface* blurred = gaussian_blur(image);
@@ -357,11 +273,6 @@ int main(int argc, char* argv[]) {
     IMG_Quit();
     SDL_Quit();
 
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
-    printf("Execution time: %.3f ms\n", ms-4000);
 
     return 0;
 }
