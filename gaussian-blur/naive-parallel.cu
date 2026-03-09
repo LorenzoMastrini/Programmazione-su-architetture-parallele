@@ -6,7 +6,7 @@
 #define HALF 10
 #define SIGMA 5.0
 
-__constant__ float d_kernel[KERNEL_SIZE*KERNEL_SIZE];
+//__constant__ float d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
 float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
 
@@ -28,16 +28,16 @@ void generate_gaussian_kernel() {
     }
 }
 
-void init_gaussian_kernel() {
+/*void init_gaussian_kernel() {
     static bool done = false;
     if (done) return;
 
     generate_gaussian_kernel();
     cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
     done = true;
-}
+}*/
 
-__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
+__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output, float *d_kernel, int width, int height, int pitch){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -92,8 +92,12 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
     
+    float *d_kernel;
+    generate_gaussian_kernel();
+    HANDLE_ERROR(cudaMalloc(&d_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float)));
+    HANDLE_ERROR(cudaMemcpy(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice));
     // Genera e copia il kernel nella memoria costante della GPU
-    init_gaussian_kernel();
+    //init_gaussian_kernel();
     
     dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + block.x - 1) / block.x,
@@ -104,9 +108,10 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     cudaEventCreate(&stop);
 
     cudaEventRecord(start);
-    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, width, height, pitch);
+    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, d_kernel, width, height, pitch);
     cudaDeviceSynchronize();
     cudaEventRecord(stop);
+    
     cudaEventSynchronize(stop);
     float ms;
     cudaEventElapsedTime(&ms, start, stop);
@@ -117,6 +122,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     HANDLE_ERROR(cudaMemcpy(dst->pixels, d_output, bytes, cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaFree(d_input));
     HANDLE_ERROR(cudaFree(d_output));
+    HANDLE_ERROR(cudaFree(d_kernel));
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);
@@ -173,7 +179,7 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-
+    
     SDL_Surface* image = load_img("images/img.jpg");
     
     SDL_Surface* blurred = gaussian_blur(image);

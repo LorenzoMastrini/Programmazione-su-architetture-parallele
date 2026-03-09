@@ -127,13 +127,13 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
+    
     cudaEventRecord(start);
-
     gaussian_horizontal<<<grid, block>>>(d_input, d_temp, width, height);
     gaussian_vertical<<<grid, block>>>(d_temp, d_input, width, height );
     checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
-    
     cudaEventRecord(stop);
+    
     cudaEventSynchronize(stop);
     float ms;
     cudaEventElapsedTime(&ms, start, stop);

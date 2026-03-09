@@ -1,10 +1,12 @@
 #include "../utils.cu"
 #include <stdio.h>
 
+
 #define KERNEL_SIZE 21
 #define BLOCK_SIZE 16
 #define HALF 10
 #define SIGMA 5.0
+#define N_STREAMS 16
 
 __constant__ float d_kernel_1d[KERNEL_SIZE];
 
@@ -32,20 +34,44 @@ void init_gaussian_kernel_once() {
     initialized = true;
 }
 
-__global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restrict__ *output, int width, int height){
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void gaussian_horizontal_shared(uchar4* __restrict__ input, uchar4* __restrict__ output, int width, int rows) {
+    __shared__ uchar4 tile[BLOCK_SIZE][BLOCK_SIZE + 2 * HALF];
 
-    if (x >= width || y >= height) return;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    float r = 0, g = 0, b = 0;
+    int x = blockIdx.x * BLOCK_SIZE + tx;
+    int y = blockIdx.y * BLOCK_SIZE + ty;
+
+    int shared_x = tx + HALF;
+
+    // Carica pixel centrale
+    if (x < width && y < rows)
+        tile[ty][shared_x] = input[y * width + x];
+
+    // Halo sinistro
+    if (tx < HALF) {
+        int halo_x = max(x - HALF, 0);
+        if (y < rows)
+            tile[ty][tx] = input[y * width + halo_x];
+    }
+
+    // Halo destro
+    if (tx >= BLOCK_SIZE - HALF) {
+        int halo_x = min(x + HALF, width - 1);
+        if (y < rows)
+            tile[ty][shared_x + HALF] = input[y * width + halo_x];
+    }
+
+    __syncthreads();
+
+    if (x >= width || y >= rows) return;
+
+    float r = 0.f, g = 0.f, b = 0.f;
 
     #pragma unroll
     for (int i = 0; i < KERNEL_SIZE; i++) {
-        int k = i - HALF;
-        int px = min(max(x + k, 0), width - 1);
-
-        uchar4 pixel = input[y * width + px];
+        uchar4 pixel = tile[ty][tx + i];
         float w = d_kernel_1d[i];
 
         r += pixel.x * w;
@@ -53,32 +79,55 @@ __global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restric
         b += pixel.z * w;
     }
 
-
     uchar4 out;
     out.x = (unsigned char)r;
     out.y = (unsigned char)g;
     out.z = (unsigned char)b;
-    out.w = input[y * width + x].w;
+    out.w = tile[ty][shared_x].w;
 
-    output[y*width+x] = out;
+    output[y * width + x] = out;
 }
 
-__global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict__ *output, int width, int height){
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void gaussian_vertical_shared(uchar4* __restrict__ input, uchar4* __restrict__ output,int width, int rows) {
+    __shared__ uchar4 tile[BLOCK_SIZE + 2 * HALF][BLOCK_SIZE];
 
-    if (x >= width || y >= height) return;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    float r = 0, g = 0, b = 0;
+    int x = blockIdx.x * BLOCK_SIZE + tx;
+    int y = blockIdx.y * BLOCK_SIZE + ty;
+
+    int shared_y = ty + HALF;
+
+    // centro
+    if (x < width && y < rows)
+        tile[shared_y][tx] = input[y * width + x];
+
+    // halo sopra
+    if (ty < HALF) {
+        int halo_y = max(y - HALF, 0);
+        if (x < width)
+            tile[ty][tx] = input[halo_y * width + x];
+    }
+
+    // halo sotto
+    if (ty >= BLOCK_SIZE - HALF) {
+        int halo_y = min(y + HALF, rows - 1);
+        if (x < width)
+            tile[shared_y + HALF][tx] = input[halo_y * width + x];
+    }
+
+    __syncthreads();
+
+    if (x >= width || y >= rows) return;
+
+    float r = 0.f, g = 0.f, b = 0.f;
 
     #pragma unroll
     for (int i = 0; i < KERNEL_SIZE; i++) {
-        int k = i - HALF;
-        int py = min(max(y + k, 0), height - 1);
-        
-        uchar4 pixel = input[py * width + x];
+        uchar4 pixel = tile[ty + i][tx];
         float w = d_kernel_1d[i];
-        
+
         r += pixel.x * w;
         g += pixel.y * w;
         b += pixel.z * w;
@@ -88,9 +137,9 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
     out.x = (unsigned char)r;
     out.y = (unsigned char)g;
     out.z = (unsigned char)b;
-    out.w = input[y * width + x].w;
-    
-    output[y*width+x] = out;
+    out.w = tile[shared_y][tx].w;
+
+    output[y * width + x] = out;
 }
 
 
@@ -99,6 +148,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
                                             src->format->Rmask, src->format->Gmask,
                                             src->format->Bmask, src->format->Amask);
+    
     if (!dst) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return NULL;
@@ -112,37 +162,75 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
+    HANDLE_ERROR(cudaHostRegister(src->pixels, bytes, cudaHostRegisterPortable));
+    HANDLE_ERROR(cudaHostRegister(dst->pixels, bytes, cudaHostRegisterPortable));
+
     uchar4 *d_input, *d_temp;
     
     // Alloca memoria GPU
     HANDLE_ERROR(cudaMalloc(&d_input, bytes));
     HANDLE_ERROR(cudaMalloc(&d_temp, bytes));
 
-    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
     init_gaussian_kernel_once();
     
-    dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
-    dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
-    
+    const int rows_per_stream = (height + N_STREAMS - 1) / N_STREAMS;
+    cudaStream_t streams[N_STREAMS];
+
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
+
     cudaEventRecord(start);
 
-    gaussian_horizontal<<<grid, block>>>(d_input, d_temp, width, height);
-    gaussian_vertical<<<grid, block>>>(d_temp, d_input, width, height );
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
-    
+    // Per ogni stream: H->D slice, kernel sulla slice, D->H slice
+    for (int i = 0; i < N_STREAMS; i++) {
+        cudaStreamCreate(&streams[i]);
+
+        int start_row = i * rows_per_stream;
+        if (start_row >= height) continue;
+
+        int this_rows = min(rows_per_stream, height - start_row);
+        if (this_rows <= 0) continue;
+
+        size_t slice_size = static_cast<size_t>(this_rows) * width * sizeof(uchar4);
+
+        uchar4 *d_slice_in  = d_input + static_cast<size_t>(start_row) * width;
+        uchar4 *d_slice_tmp = d_temp  + static_cast<size_t>(start_row) * width;
+        uchar4 *h_slice_in  = reinterpret_cast<uchar4*>(src->pixels) + static_cast<size_t>(start_row) * width;
+        uchar4 *h_slice_out = reinterpret_cast<uchar4*>(dst->pixels) + static_cast<size_t>(start_row) * width;
+
+        // Copia H -> D della slice
+        HANDLE_ERROR(cudaMemcpyAsync(d_slice_in,h_slice_in, slice_size, cudaMemcpyHostToDevice, streams[i]));
+
+        dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
+        dim3 grid((width + BLOCK_SIZE - 1) / BLOCK_SIZE,
+                  (this_rows + BLOCK_SIZE - 1) / BLOCK_SIZE);
+
+        // Kernel di blur orizzontale e verticale sulla slice con shared memory
+        gaussian_horizontal_shared<<<grid, block, 0, streams[i]>>>(d_slice_in, d_slice_tmp, width, this_rows);
+        gaussian_vertical_shared<<<grid, block, 0, streams[i]>>>(d_slice_tmp, d_slice_in, width, this_rows);
+
+        // Copia D -> H della slice
+        HANDLE_ERROR(cudaMemcpyAsync(h_slice_out, d_slice_in, slice_size, cudaMemcpyDeviceToHost, streams[i]));
+    }
+
+    // Attendi che tutte le operazioni per tutti gli stream siano completate
+    for (int i = 0; i < N_STREAMS; i++) {
+        HANDLE_ERROR(cudaStreamSynchronize(streams[i]));
+    }
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
+
     float ms;
     cudaEventElapsedTime(&ms, start, stop);
     printf("Execution time: %.3f ms\n", ms);
 
-    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaFree(d_input));
     HANDLE_ERROR(cudaFree(d_temp));
 
+    HANDLE_ERROR((cudaHostUnregister(src->pixels)));
+    HANDLE_ERROR((cudaHostUnregister(dst->pixels)));
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);
 
@@ -201,7 +289,8 @@ int main(int argc, char* argv[]) {
     }
 
     SDL_Surface* image = load_img("images/img.jpg");
-    
+    int size = image->w * image->h * sizeof(uchar4);
+
     SDL_Surface* blurred = gaussian_blur(image);
 
     if (!blurred) {
@@ -212,7 +301,6 @@ int main(int argc, char* argv[]) {
         IMG_Quit();
         SDL_Quit();
         return 1;
-
     }
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
