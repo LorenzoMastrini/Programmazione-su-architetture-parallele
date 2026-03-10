@@ -1,39 +1,42 @@
 #include <stdio.h>
-#include "../utils.h"
+#include "../utils.cu"
 
-#define KERNEL_SIZE 5
+#define KERNEL_SIZE 21
+#define BLOCK_SIZE 16
+#define HALF 10
+#define SIGMA 5.0
 
+float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
 
-// Kernel gaussiano 5x5 pre-calcolato e normalizzato
-double kernel[KERNEL_SIZE][KERNEL_SIZE] = {
-    {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273},
-    {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
-    {7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273},
-    {4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273},
-    {1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273}
-};
-
-// Funzioni per leggere e scrivere pixel da SDL_Surface 32bit
-Uint32 get_pixel(SDL_Surface *surface, int x, int y) {
-    if (x < 0) x = 0;
-    if (x >= surface->w) x = surface->w - 1;
-    if (y < 0) y = 0;
-    if (y >= surface->h) y = surface->h - 1;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    return *(Uint32 *)p;
-}
-
-void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
-    if (x < 0 || x >= surface->w || y < 0 || y >= surface->h) return;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    *(Uint32 *)p = pixel;
+// Genera il kernel gaussiano normalizzato a runtime
+void generate_gaussian_kernel() {
+    double sum = 0.0;
+    
+    for (int y = -HALF; y <= HALF; y++) {
+        for (int x = -HALF; x <= HALF; x++) {
+            double value = exp(-(x*x + y*y) / (2.0 * SIGMA * SIGMA));
+            h_kernel[(y + HALF) * KERNEL_SIZE + (x + HALF)] = value;
+            sum += value;
+        }
+    }
+    
+    // Normalizza
+    for (int i = 0; i < KERNEL_SIZE * KERNEL_SIZE; i++) {
+        h_kernel[i] /= sum;
+    }
 }
 
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
-    SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
-                                            src->format->Rmask, src->format->Gmask,
-                                            src->format->Bmask, src->format->Amask);
+    SDL_Surface* dst = SDL_CreateRGBSurface(
+        0,
+        src->w, src->h, 32,
+        src->format->Rmask,
+        src->format->Gmask,
+        src->format->Bmask,
+        src->format->Amask
+    );
+
     if (!dst) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return NULL;
@@ -42,37 +45,48 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
 
-    int half = KERNEL_SIZE / 2;
-    for (int y = 0; y < src->h; y++) {
-        for (int x = 0; x < src->w; x++) {
-            // Se il kernel uscirebbe fuori, copia il pixel originale
-            /*if (x < half || x >= src->w - half || y < half || y >= src->h - half) {
-                Uint32 pixel = get_pixel(src, x, y);
-                put_pixel(dst, x, y, pixel);
-                continue;
-            }*/
-            double r_sum = 0, g_sum = 0, b_sum = 0;
-            for (int ky = -half; ky <= half; ky++) {
-                for (int kx = -half; kx <= half; kx++) {
+    int width = src->w;
+    int height = src->h;
+    int pitch = src->pitch;
+
+    unsigned char* input  = (unsigned char*)src->pixels;
+    unsigned char* output = (unsigned char*)dst->pixels;
+
+    generate_gaussian_kernel();
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+
+            double r_sum = 0.0;
+            double g_sum = 0.0;
+            double b_sum = 0.0;
+
+            for (int ky = -HALF; ky <= HALF; ky++) {
+                for (int kx = -HALF; kx <= HALF; kx++) {
+
                     int px = x + kx;
                     int py = y + ky;
-                    Uint32 pixel = get_pixel(src, px, py);
 
-                    Uint8 r, g, b, a;
-                    SDL_GetRGB(pixel, src->format, &r, &g, &b);
+                    // Clamp bordi (stessa logica CUDA)
+                    if (px < 0) px = 0;
+                    if (py < 0) py = 0;
+                    if (px >= width)  px = width - 1;
+                    if (py >= height) py = height - 1;
 
-                    double weight = kernel[ky + half][kx + half];
-                    r_sum += r * weight;
-                    g_sum += g * weight;
-                    b_sum += b * weight;
+                    int pixel_index = py * pitch + px * 4;
+                    double weight = h_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
+
+                    r_sum += input[pixel_index + 0] * weight;
+                    g_sum += input[pixel_index + 1] * weight;
+                    b_sum += input[pixel_index + 2] * weight;
                 }
             }
-            Uint8 r_blur = (Uint8)r_sum;
-            Uint8 g_blur = (Uint8)g_sum;
-            Uint8 b_blur = (Uint8)b_sum;
 
-            Uint32 new_pixel = SDL_MapRGB(dst->format, r_blur, g_blur, b_blur);
-            put_pixel(dst, x, y, new_pixel);
+            int out_index = y * pitch + x * 4;
+            output[out_index + 0] = (unsigned char)r_sum;
+            output[out_index + 1] = (unsigned char)g_sum;
+            output[out_index + 2] = (unsigned char)b_sum;
+            output[out_index + 3] = input[out_index + 3]; // alpha invariato
         }
     }
 
@@ -136,8 +150,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Surface* image = load_img("images/Lenna_(test_image).png");
-    
+    SDL_Surface* image = load_img("images/img.jpg");
+    generate_gaussian_kernel();
+
     cudaEventRecord(start);
     SDL_Surface* blurred = gaussian_blur(image);
     cudaEventRecord(stop);
@@ -175,6 +190,6 @@ int main(int argc, char* argv[]) {
     IMG_Quit();
     SDL_Quit();
 
-    printf("Kernel time: %.3f ms\n", ms);
+    printf("Execution time: %.3f ms\n", ms);
     return 0;
 }

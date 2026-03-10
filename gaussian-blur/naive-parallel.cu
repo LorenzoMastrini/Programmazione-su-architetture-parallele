@@ -1,55 +1,59 @@
-#include "../utils.h"
+#include "../utils.cu"
 #include <stdio.h>
 
-#define KERNEL_SIZE 5
+#define KERNEL_SIZE 21
+#define BLOCK_SIZE 16
+#define HALF 10
+#define SIGMA 5.0
 
-__constant__ double d_kernel[KERNEL_SIZE*KERNEL_SIZE];
+//__constant__ float d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
+float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
 
-// Kernel gaussiano 5x5 pre-calcolato e normalizzato (array 1D in ordine row-major)
-double h_kernel[KERNEL_SIZE * KERNEL_SIZE] = {
-    1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273,
-    4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273,
-    7.0/273, 26.0/273, 41.0/273, 26.0/273, 7.0/273,
-    4.0/273, 16.0/273, 26.0/273, 16.0/273, 4.0/273,
-    1.0/273,  4.0/273,  7.0/273,  4.0/273, 1.0/273
-};
-
-// Funzioni per leggere e scrivere pixel da SDL_Surface 32bit
-Uint32 get_pixel(SDL_Surface *surface, int x, int y) {
-    if (x < 0) x = 0;
-    if (x >= surface->w) x = surface->w - 1;
-    if (y < 0) y = 0;
-    if (y >= surface->h) y = surface->h - 1;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    return *(Uint32 *)p;
+// Genera il kernel gaussiano normalizzato a runtime
+void generate_gaussian_kernel() {
+    double sum = 0.0;
+    
+    for (int y = -HALF; y <= HALF; y++) {
+        for (int x = -HALF; x <= HALF; x++) {
+            double value = exp(-(x*x + y*y) / (2.0 * SIGMA * SIGMA));
+            h_kernel[(y + HALF) * KERNEL_SIZE + (x + HALF)] = value;
+            sum += value;
+        }
+    }
+    
+    // Normalizza
+    for (int i = 0; i < KERNEL_SIZE * KERNEL_SIZE; i++) {
+        h_kernel[i] /= sum;
+    }
 }
 
-void put_pixel(SDL_Surface *surface, int x, int y, Uint32 pixel) {
-    if (x < 0 || x >= surface->w || y < 0 || y >= surface->h) return;
-    Uint8 *p = (Uint8 *)surface->pixels + y * surface->pitch + x * 4;
-    *(Uint32 *)p = pixel;
-}
+/*void init_gaussian_kernel() {
+    static bool done = false;
+    if (done) return;
 
-__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
+    generate_gaussian_kernel();
+    cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
+    done = true;
+}*/
+
+__global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output, float *d_kernel, int width, int height, int pitch){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x >= width || y >= height)
         return;
 
-    int half = KERNEL_SIZE / 2;
-
     double r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
 
-    for (int ky = -half; ky <= half; ky++) {
-        for (int kx = -half; kx <= half; kx++) {
+    for (int ky = -HALF; ky <= HALF; ky++) {
+        for (int kx = -HALF; kx <= HALF; kx++) {
             int px = min(max(x + kx, 0), width - 1);
             int py = min(max(y + ky, 0), height - 1);
 
             int pixel_index = py * pitch + px * 4;
 
-            double weight = d_kernel[(ky + half) * KERNEL_SIZE + (kx + half)];
+            double weight = d_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
             r_sum += input[pixel_index + 0] * weight;
             g_sum += input[pixel_index + 1] * weight;
             b_sum += input[pixel_index + 2] * weight;
@@ -88,20 +92,37 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
     
-    // Copia il kernel nella memoria costante della GPU
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(double)));    
+    float *d_kernel;
+    generate_gaussian_kernel();
+    HANDLE_ERROR(cudaMalloc(&d_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float)));
+    HANDLE_ERROR(cudaMemcpy(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    // Genera e copia il kernel nella memoria costante della GPU
+    //init_gaussian_kernel();
     
-    dim3 block(16, 16); // 256 thread per blocco
+    dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
     
-    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, width, height, pitch);
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
+    gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, d_kernel, width, height, pitch);
     cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    
+    cudaEventSynchronize(stop);
+    float ms;
+    cudaEventElapsedTime(&ms, start, stop);
+    printf("Execution time: %.3f ms\n", ms);
+
     checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
 
     HANDLE_ERROR(cudaMemcpy(dst->pixels, d_output, bytes, cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaFree(d_input));
     HANDLE_ERROR(cudaFree(d_output));
+    HANDLE_ERROR(cudaFree(d_kernel));
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);
@@ -110,10 +131,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 }
 
 int main(int argc, char* argv[]) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
     init_SDL();
 
     // Ottieni le dimensioni dello schermo per posizionare le finestre
@@ -162,8 +179,8 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-
-    SDL_Surface* image = load_img("images/img-gaussianblur.jpg");
+    
+    SDL_Surface* image = load_img("images/img.jpg");
     
     SDL_Surface* blurred = gaussian_blur(image);
     if (!blurred) {
@@ -196,12 +213,6 @@ int main(int argc, char* argv[]) {
     SDL_FreeSurface(image);
     IMG_Quit();
     SDL_Quit();
-
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
-    printf("Execution time: %.3f ms\n", ms-4000);
 
     return 0;
 }
