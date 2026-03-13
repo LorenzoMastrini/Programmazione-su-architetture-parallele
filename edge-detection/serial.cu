@@ -217,16 +217,16 @@ int main() {
     // Profiling
     cudaEvent_t start, stop;
     float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     // Edge detection
     SDL_Surface *final = sobel_edge_detection(image);
     if (!final) {
         fprintf(stderr, "Errore nell'elaborazione Sobel\n");
-        HANDLE_ERROR(cudaEventDestroy(start));
-        HANDLE_ERROR(cudaEventDestroy(stop));
+        CUDA_CHECK(cudaEventDestroy(start));
+        CUDA_CHECK(cudaEventDestroy(stop));
         SDL_FreeSurface(image);
         IMG_Quit();
         SDL_Quit();
@@ -234,12 +234,12 @@ int main() {
     }
     
     // Profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.3f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
     
     SDL_Window *window = create_window("RGB to grayscale");
     if (!window) {

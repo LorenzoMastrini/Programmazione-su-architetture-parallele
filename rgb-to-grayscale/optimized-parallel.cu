@@ -16,8 +16,7 @@
 
 // Use constant memory to access constants to be used in the kernel
 __constant__ __device__ float GRAY_COEF[3] = {0.2126f, 0.7152f, 0.0722f};
-__constant__ __device__ uint32_t D_WIDTH = WIDTH;
-__constant__ __device__ uint32_t VECTORS_PER_ROW = WIDTH / PIXELS_PER_THREAD; // assumiamo D_WIDTH multiplo di PIXELS_PER_THREAD
+__constant__ __device__ uint32_t VECTORS_PER_ROW = WIDTH / PIXELS_PER_THREAD; // assumiamo WIDTH multiplo di PIXELS_PER_THREAD
 
 // Ogni thread elabora PIXELS_PER_THREAD pixel consecutivi sulla stessa riga,
 // usando accessi vettoriali (uint4) per massimizzare coalescing e banda di memoria.
@@ -83,27 +82,27 @@ int main() {
     init_SDL();
 
     SDL_Surface *image = load_img("images/img.jpg");
-
-    // ----- CUDA setup and calculations -----
+    SDL_LockSurface(image);
     int size = WIDTH * HEIGHT * sizeof(uchar4);
 
-    SDL_LockSurface(image);
-    cudaHostRegister(image->pixels, size, cudaHostRegisterPortable); // Register existing buffer as page-locked (pinned) memory
-    uint8_t *h_output;
-    cudaMallocHost(&h_output, WIDTH * HEIGHT);
-
-    // profiling
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
     cudaEvent_t start, stop;
     float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
+
+    // Register existing buffer as page-locked (pinned) memory
+    CUDA_CHECK(cudaHostRegister(image->pixels, size, cudaHostRegisterPortable));
+    uint8_t *h_output;
+    CUDA_CHECK(cudaMallocHost(&h_output, WIDTH * HEIGHT));
 
     // Allocate GPU memory
     uchar4 *d_pixels_in;
     uint8_t *d_pixels_out;
-    HANDLE_ERROR(cudaMalloc(&d_pixels_in, size));
-    HANDLE_ERROR(cudaMalloc(&d_pixels_out, WIDTH * HEIGHT)); // 1 byte per pixel
+    CUDA_CHECK(cudaMalloc(&d_pixels_in, size));
+    CUDA_CHECK(cudaMalloc(&d_pixels_out, WIDTH * HEIGHT * sizeof(uint8_t))); // 1 byte per pixel
 
     // CUDA streams
     const int rows_per_stream = HEIGHT / N_STREAMS;
@@ -111,13 +110,17 @@ int main() {
     cudaStream_t streams[N_STREAMS];
     
     for(int i = 0; i < N_STREAMS; i++) {
-        cudaStreamCreate(&streams[i]);
+        CUDA_CHECK(cudaStreamCreate(&streams[i]));
 
         int start_row = i * rows_per_stream;
         uchar4 *slice_in = d_pixels_in + start_row * WIDTH;
         uint8_t *slice_out = d_pixels_out + start_row * WIDTH;
 
-        cudaMemcpyAsync(slice_in, (uchar4*) image->pixels + start_row * WIDTH, slice_size, cudaMemcpyHostToDevice, streams[i]);
+        CUDA_CHECK(cudaMemcpyAsync(slice_in,
+                                   (uchar4*) image->pixels + start_row * WIDTH,
+                                   slice_size,
+                                   cudaMemcpyHostToDevice,
+                                   streams[i]));
 
         dim3 block(BLOCK_X, BLOCK_Y);
         // Works for every image resolution
@@ -125,32 +128,28 @@ int main() {
                   (rows_per_stream + BLOCK_Y - 1) / BLOCK_Y); // 135
 
         rgb_to_grayscale_parallel<<<grid, block, 0, streams[i]>>>(slice_in, slice_out, rows_per_stream); // Run the kernel
-        checkCUDAError((char*) cudaGetLastError());
+        CUDA_CHECK(cudaGetLastError());
 
-        cudaMemcpyAsync(h_output + start_row * WIDTH, slice_out, rows_per_stream * WIDTH, cudaMemcpyDeviceToHost, streams[i]);
+        CUDA_CHECK(cudaMemcpyAsync(h_output + start_row * WIDTH,
+                                   slice_out,
+                                   rows_per_stream * WIDTH,
+                                   cudaMemcpyDeviceToHost,
+                                   streams[i]));
     }
 
     // Wait for all streams
     for (int i = 0; i < N_STREAMS; i++)
-        cudaStreamSynchronize(streams[i]);
+        CUDA_CHECK(cudaStreamSynchronize(streams[i]));
 
-    // profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.2f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));  
 
-    SDL_UnlockSurface(image);
-
-    // CUDA cleanup
-    for (int i = 0; i < N_STREAMS; i++)
-        HANDLE_ERROR(cudaStreamDestroy(streams[i]));
-    HANDLE_ERROR(cudaFree(d_pixels_in));
-    HANDLE_ERROR(cudaFree(d_pixels_out));
-    cudaHostUnregister(image->pixels); // Unregister page-locked (pinned) memory
-
+    // -------------------------------------------------- END CUDA --------------------------------------------------
 
     // ----- Show the modified image -----
      SDL_Surface *grayscale = SDL_CreateRGBSurfaceWithFormatFrom(
@@ -175,15 +174,21 @@ int main() {
     SDL_Window *window = create_window("RGB to grayscale - Optimized parallel"); // Create the window (fullscreen)
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, grayscale32);
-    SDL_FreeSurface(image);
-    SDL_FreeSurface(grayscale32);
     SDL_RenderCopy(renderer, texture, NULL, NULL); // Copy the texture to the renderer
     SDL_RenderPresent(renderer); // Update the screen with the rendered content
     SDL_Delay(SHOW_IMAGE_FOR); // Show for 3 seconds
 
     // ----- Cleanup -----
+    for (int i = 0; i < N_STREAMS; i++)
+        CUDA_CHECK(cudaStreamDestroy(streams[i]));
+    CUDA_CHECK(cudaFree(d_pixels_in));
+    CUDA_CHECK(cudaFree(d_pixels_out));
+    CUDA_CHECK(cudaFreeHost(h_output));
+    CUDA_CHECK(cudaHostUnregister(image->pixels)); // Unregister page-locked (pinned) memory
+    SDL_UnlockSurface(image);
+    SDL_FreeSurface(image);
+    SDL_FreeSurface(grayscale32);
     SDL_DestroyWindow(window);
-    cudaFree(h_output);
     IMG_Quit();
     SDL_Quit();
 

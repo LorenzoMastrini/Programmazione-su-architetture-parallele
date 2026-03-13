@@ -1,4 +1,4 @@
-#include "../utils.cu"
+#include "../utils.h"
 #include <stdio.h>
 
 #define KERNEL_SIZE 21

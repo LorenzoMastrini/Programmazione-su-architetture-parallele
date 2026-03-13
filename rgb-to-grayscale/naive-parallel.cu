@@ -39,17 +39,18 @@ int main() {
 
     int size = WIDTH * HEIGHT * sizeof(Uint32);
     
-    // profiling
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
     cudaEvent_t start, stop;
     float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     // Allocate GPU memory
     Uint32 *d_pixels;
-    HANDLE_ERROR(cudaMalloc(&d_pixels, size));
-    HANDLE_ERROR(cudaMemcpy(d_pixels, image->pixels, size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_pixels, size));
+    CUDA_CHECK(cudaMemcpy(d_pixels, image->pixels, size, cudaMemcpyHostToDevice));
 
     dim3 block(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
     // Works for every image resolution
@@ -57,21 +58,20 @@ int main() {
               (HEIGHT+ block.y - 1) / block.y); // 135
 
     rgb_to_grayscale_parallel<<<grid, block>>>(d_pixels, WIDTH, HEIGHT); // Run the kernel
-    checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
+    CUDA_CHECK(cudaGetLastError());
 
     // Copy back the results
-    HANDLE_ERROR(cudaMemcpy(image->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // Implicit barrier
+    CUDA_CHECK(cudaMemcpy(image->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // Implicit barrier
 
-    HANDLE_ERROR(cudaFree(d_pixels));
-
-    // profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.2f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
     
+    // -------------------------------------------------- END CUDA --------------------------------------------------
 
     // Create the window (fullscreen)
     SDL_Window *window = create_window("RGB to grayscale - Parallel");
@@ -89,7 +89,8 @@ int main() {
 
     SDL_Delay(SHOW_IMAGE_FOR); // Show for 3 seconds
 
-    // Free everything
+    // ----- Cleanup -----
+    CUDA_CHECK(cudaFree(d_pixels));
     SDL_FreeSurface(image);
     SDL_DestroyWindow(window);
     IMG_Quit();

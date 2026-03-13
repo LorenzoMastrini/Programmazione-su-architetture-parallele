@@ -182,11 +182,16 @@ int main() {
     init_SDL();
 
     SDL_Surface *image = load_img("images/img.jpg");
-    
     int size = WIDTH * HEIGHT * sizeof(Uint32); // Size of RGB images
     int pixels_per_row = image->pitch / sizeof(Uint32); // 1 pixel = 4 bytes, hence the division (pitch: bytes per row)
 
-    // -----------------------------------------------------------------------
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     // Create CUDA environment
     dim3 block(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
@@ -209,49 +214,38 @@ int main() {
 
     Uint32 *d_input, *d_output;
 
-    HANDLE_ERROR(cudaMalloc(&d_input, size));
-    HANDLE_ERROR(cudaMalloc(&d_output, size));
+    CUDA_CHECK(cudaMalloc(&d_input, size));
+    CUDA_CHECK(cudaMalloc(&d_output, size));
 
-    HANDLE_ERROR(cudaMemcpy(d_input, image->pixels, size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_input, image->pixels, size, cudaMemcpyHostToDevice));
     
     // Genera e copia il kernel nella memoria costante della GPU
     init_gaussian_kernel();
     
     gaussian_blur_parallel<<<grid, block>>>(d_input, d_output, WIDTH, HEIGHT, pixels_per_row);
     cudaDeviceSynchronize();
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+    CUDA_CHECK(cudaGetLastError());
 
-    HANDLE_ERROR(cudaMemcpy(blurred->pixels, d_output, size, cudaMemcpyDeviceToHost));
-    HANDLE_ERROR(cudaFree(d_input));
-    HANDLE_ERROR(cudaFree(d_output));
+    CUDA_CHECK(cudaMemcpy(blurred->pixels, d_output, size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_output));
 
-    SDL_UnlockSurface(image);
-    SDL_FreeSurface(image);
-
-
+    
     // ---------- RGB TO GRAYSCALE ----------
     // Allocate GPU memory
     Uint32 *d_pixels;
-    HANDLE_ERROR(cudaMalloc(&d_pixels, size));
-    HANDLE_ERROR(cudaMemcpy(d_pixels, blurred->pixels, size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_pixels, size));
+    CUDA_CHECK(cudaMemcpy(d_pixels, blurred->pixels, size, cudaMemcpyHostToDevice));
 
     // CUDA Kernel
     rgb_to_grayscale_parallel<<<grid, block>>>(d_pixels, WIDTH, HEIGHT);
-    checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
+    CUDA_CHECK(cudaGetLastError());
 
     // Copy back the results
-    HANDLE_ERROR(cudaMemcpy(blurred->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // Implicit barrier
-    HANDLE_ERROR(cudaFree(d_pixels));
+    CUDA_CHECK(cudaMemcpy(blurred->pixels, d_pixels, size, cudaMemcpyDeviceToHost)); // Implicit barrier
+    CUDA_CHECK(cudaFree(d_pixels));
 
-
-    // Profiling
-    cudaEvent_t start, stop;
-    float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-
-
+    
     // ---------- SOBEL EDGE DETECTION ----------
     // Create CUDA environment
     dim3 block_sobel(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
@@ -260,35 +254,31 @@ int main() {
                     (HEIGHT+ block_sobel.y - 1) / block_sobel.y); // 135 in this case
 
     Uint32 *d_input_sobel, *d_output_sobel;
-    HANDLE_ERROR(cudaMalloc(&d_input_sobel, size));
-    HANDLE_ERROR(cudaMalloc(&d_output_sobel, size));
-    HANDLE_ERROR(cudaMemcpy(d_input_sobel, blurred->pixels, size, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_input_sobel, size));
+    CUDA_CHECK(cudaMalloc(&d_output_sobel, size));
+    CUDA_CHECK(cudaMemcpy(d_input_sobel, blurred->pixels, size, cudaMemcpyHostToDevice));
 
     // CUDA Kernel
     sobel_edge_detection_parallel<<<grid_sobel, block_sobel>>>(d_input_sobel, d_output_sobel, WIDTH, HEIGHT);
-    HANDLE_ERROR(cudaDeviceSynchronize());
-    checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
+    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaGetLastError());
 
     // Host output buffer
     Uint32 *h_output = (Uint32*) malloc(size);
 
     // Copy back the results
-    HANDLE_ERROR(cudaMemcpy(h_output, d_output_sobel, size, cudaMemcpyDeviceToHost));
-
-    // Clean up
-    SDL_UnlockSurface(blurred);
-    SDL_FreeSurface(blurred);
-    cudaFree(d_input_sobel);
-    cudaFree(d_output_sobel);
+    CUDA_CHECK(cudaMemcpy(h_output, d_output_sobel, size, cudaMemcpyDeviceToHost));    
     
     // Profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.3f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
     
+    // -------------------------------------------------- END CUDA --------------------------------------------------
+
     // Create SDL surfcce (ARGB8888)
     SDL_Surface *final = SDL_CreateRGBSurfaceFrom(
         (void*) h_output,          // Pixel data
@@ -330,6 +320,12 @@ int main() {
     SDL_Delay(SHOW_IMAGE_FOR); // Show the image for 3 seconds
 
     // Free everything
+    CUDA_CHECK(cudaFree(d_input_sobel));
+    CUDA_CHECK(cudaFree(d_output_sobel));
+    SDL_UnlockSurface(image);
+    SDL_FreeSurface(image);
+    SDL_UnlockSurface(blurred);
+    SDL_FreeSurface(blurred);
     SDL_FreeSurface(final);
     SDL_DestroyWindow(window);
     IMG_Quit();

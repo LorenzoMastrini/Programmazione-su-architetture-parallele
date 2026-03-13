@@ -21,6 +21,18 @@
 
 // Macro to handle CUDA errors
 #define HANDLE_ERROR(err) HandleError(err, __FILE__, __LINE__)
+#define CUDA_CHECK(expr_to_check) do {                  \
+    cudaError_t result  = expr_to_check;                \
+    if(result != cudaSuccess)                           \
+    {                                                   \
+        fprintf(stderr,                                 \
+                "CUDA Runtime Error: %s:%i:%d = %s\n",  \
+                __FILE__,                               \
+                __LINE__,                               \
+                result,                                 \
+                cudaGetErrorString(result));            \
+    }                                                   \
+} while(0)
 
 void HandleError(cudaError_t err, const char* file, int line);
 void checkCUDAError(const char *msg);
