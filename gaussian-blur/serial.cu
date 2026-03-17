@@ -1,8 +1,7 @@
 #include <stdio.h>
-#include "../utils.cu"
+#include "../utils.h"
 
 #define KERNEL_SIZE 21
-#define BLOCK_SIZE 16
 #define HALF 10
 #define SIGMA 5.0
 

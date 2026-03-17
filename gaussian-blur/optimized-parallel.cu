@@ -1,6 +1,5 @@
-#include "../utils.cu"
+#include "../utils.h"
 #include <stdio.h>
-
 
 #define KERNEL_SIZE 21
 #define BLOCK_SIZE 16
@@ -9,7 +8,6 @@
 #define N_STREAMS 16
 
 __constant__ float d_kernel_1d[KERNEL_SIZE];
-
 
 float h_kernel_1d[KERNEL_SIZE];
 

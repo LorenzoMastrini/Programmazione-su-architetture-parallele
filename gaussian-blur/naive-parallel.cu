@@ -1,12 +1,10 @@
-#include "../utils.cu"
+#include "../utils.h"
 #include <stdio.h>
 
 #define KERNEL_SIZE 21
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE 32
 #define HALF 10
 #define SIGMA 5.0
-
-//__constant__ float d_kernel[KERNEL_SIZE*KERNEL_SIZE];
 
 float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
 
@@ -28,14 +26,7 @@ void generate_gaussian_kernel() {
     }
 }
 
-/*void init_gaussian_kernel() {
-    static bool done = false;
-    if (done) return;
 
-    generate_gaussian_kernel();
-    cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
-    done = true;
-}*/
 
 __global__ void gaussian_blur_kernel(unsigned char *input, unsigned char *output, float *d_kernel, int width, int height, int pitch){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -77,6 +68,8 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         return NULL;
     }
 
+    cudaEvent_t start, stop;
+
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
 
@@ -86,7 +79,11 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     size_t bytes = height * pitch;
     unsigned char *d_input, *d_output;
+    
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
+    cudaEventRecord(start);
     HANDLE_ERROR(cudaMalloc(&d_input, bytes));
     HANDLE_ERROR(cudaMalloc(&d_output, bytes));
 
@@ -103,11 +100,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     dim3 grid((width + block.x - 1) / block.x,
               (height + block.y - 1) / block.y);
     
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
-    cudaEventRecord(start);
     gaussian_blur_kernel<<<grid, block>>>(d_input, d_output, d_kernel, width, height, pitch);
     cudaDeviceSynchronize();
     cudaEventRecord(stop);
