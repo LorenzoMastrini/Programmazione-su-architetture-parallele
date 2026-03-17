@@ -43,7 +43,7 @@ void init_gaussian_kernel() {
     done = true;
 }
 
-__global__ void gaussian_blur_parallel(unsigned char *input, unsigned char *output,int width, int height, int pitch){
+__global__ void gaussian_blur_parallel(Uint32 *input, Uint32 *output, int width, int height, int pixels_per_row){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -56,26 +56,51 @@ __global__ void gaussian_blur_parallel(unsigned char *input, unsigned char *outp
             int px = min(max(x + kx, 0), width - 1);
             int py = min(max(y + ky, 0), height - 1);
 
-            int pixel_index = py * pitch + px * 4;
+            int pixel_index = py * pixels_per_row + px;
+
+            Uint32 p = input[pixel_index];
+            Uint8 r = (p >> 16) & 0xFF;
+            Uint8 g = (p >> 8) & 0xFF;
+            Uint8 b = p & 0xFF;
 
             double weight = d_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
-            r_sum += input[pixel_index + 0] * weight;
-            g_sum += input[pixel_index + 1] * weight;
-            b_sum += input[pixel_index + 2] * weight;
+            r_sum += r * weight;
+            g_sum += g * weight;
+            b_sum += b * weight;
         }
     }
 
-    int out_index = y * pitch + x * 4;
-    output[out_index + 0] = (unsigned char)r_sum;
-    output[out_index + 1] = (unsigned char)g_sum;
-    output[out_index + 2] = (unsigned char)b_sum;
-    output[out_index + 3] = input[y * pitch + x * 4 + 3]; // Preserva il canale alpha  
+    int out_index = y * pixels_per_row + x;
+
+    // Clamping dei valori nel range [0, 255]
+    int r_out = (int)r_sum;
+    int g_out = (int)g_sum;
+    int b_out = (int)b_sum;
+
+    r_out = max(0, min(255, r_out));
+    g_out = max(0, min(255, g_out));
+    b_out = max(0, min(255, b_out));
+
+    Uint8 r = (Uint8)r_out;
+    Uint8 g = (Uint8)g_out;
+    Uint8 b = (Uint8)b_out;
+
+    Uint32 in_pixel = input[out_index];
+    Uint8 a = (in_pixel >> 24) & 0xFF;
+
+    Uint32 out_pixel =
+        (a << 24) |
+        (r << 16) |
+        (g << 8)  |
+        b;
+
+    output[out_index] = out_pixel;
 }
 
 
 
 // ---------- RGB TO GRAYSCALE ----------
-__global__ void rgb_to_grayscale_parallel(Uint32* dev_pixels, int dev_w, int dev_h) {
+__global__ void rgb_to_grayscale_parallel(Uint32 *dev_pixels, int dev_w, int dev_h) {
     // Global coordinates of the pixel in the image
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -96,7 +121,7 @@ __global__ void rgb_to_grayscale_parallel(Uint32* dev_pixels, int dev_w, int dev
 
 
 // ---------- SOBEL EDGE DETECTION ----------
-__global__ void sobel_edge_detection_parallel(Uint32 *input, Uint32 *output, int dev_w, int dev_h, int dev_pixels_per_row) {
+__global__ void sobel_edge_detection_parallel(Uint32 *input, Uint32 *output, int dev_w, int dev_h) {
     // Global coordinates of the pixel in the image
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -122,7 +147,6 @@ __global__ void sobel_edge_detection_parallel(Uint32 *input, Uint32 *output, int
         { 1,  2,  1}
     };
 
-
     int sumX = 0;
     int sumY = 0;
 
@@ -147,7 +171,7 @@ __global__ void sobel_edge_detection_parallel(Uint32 *input, Uint32 *output, int
     Uint32 new_pixel =
         (255 << 24) |   // A
         (mag << 16) |   // R
-        (mag << 8) |    // G
+        (mag << 8)  |   // G
         mag;            // B
     output[idx] = new_pixel;
 }
@@ -160,14 +184,9 @@ int main() {
     SDL_Surface *image = load_img("images/img.jpg");
     
     int size = WIDTH * HEIGHT * sizeof(Uint32); // Size of RGB images
-    int pixels_per_row = image->pitch / 4; // 1 pixel = 4 bytes, ence the fraction (pitch: bytes per row)
+    int pixels_per_row = image->pitch / sizeof(Uint32); // 1 pixel = 4 bytes, hence the division (pitch: bytes per row)
 
-    // Profiling
-    cudaEvent_t start, stop;
-    float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
+    // -----------------------------------------------------------------------
 
     // Create CUDA environment
     dim3 block(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
@@ -178,8 +197,8 @@ int main() {
 
     // ---------- GAUSSIAN BLUR ----------
     SDL_Surface* blurred = SDL_CreateRGBSurface(0, image->w, image->h, 32,
-                                            image->format->Rmask, image->format->Gmask,
-                                            image->format->Bmask, image->format->Amask);
+                                                image->format->Rmask, image->format->Gmask,
+                                                image->format->Bmask, image->format->Amask);
     if (!blurred) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return 1;
@@ -188,7 +207,7 @@ int main() {
     SDL_LockSurface(image);
     SDL_LockSurface(blurred);
 
-    unsigned char *d_input, *d_output;
+    Uint32 *d_input, *d_output;
 
     HANDLE_ERROR(cudaMalloc(&d_input, size));
     HANDLE_ERROR(cudaMalloc(&d_output, size));
@@ -198,7 +217,7 @@ int main() {
     // Genera e copia il kernel nella memoria costante della GPU
     init_gaussian_kernel();
     
-    gaussian_blur_parallel<<<grid, block>>>(d_input, d_output, WIDTH, HEIGHT, image->pitch);
+    gaussian_blur_parallel<<<grid, block>>>(d_input, d_output, WIDTH, HEIGHT, pixels_per_row);
     cudaDeviceSynchronize();
     checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
 
@@ -207,7 +226,6 @@ int main() {
     HANDLE_ERROR(cudaFree(d_output));
 
     SDL_UnlockSurface(image);
-    SDL_UnlockSurface(blurred);
     SDL_FreeSurface(image);
 
 
@@ -226,16 +244,28 @@ int main() {
     HANDLE_ERROR(cudaFree(d_pixels));
 
 
-    // ---------- SOBEL EDGE DETECTION ----------
-    Uint32 *d_input_sobel, *d_output_sobel;
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
 
+
+    // ---------- SOBEL EDGE DETECTION ----------
+    // Create CUDA environment
+    dim3 block_sobel(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
+    // Scales for every image resolution
+    dim3 grid_sobel((WIDTH + block_sobel.x - 1) / block_sobel.x, // 240 in this case
+                    (HEIGHT+ block_sobel.y - 1) / block_sobel.y); // 135 in this case
+
+    Uint32 *d_input_sobel, *d_output_sobel;
     HANDLE_ERROR(cudaMalloc(&d_input_sobel, size));
     HANDLE_ERROR(cudaMalloc(&d_output_sobel, size));
-
     HANDLE_ERROR(cudaMemcpy(d_input_sobel, blurred->pixels, size, cudaMemcpyHostToDevice));
 
     // CUDA Kernel
-    sobel_edge_detection_parallel<<<grid, block>>>(d_input_sobel, d_output_sobel, WIDTH, HEIGHT, pixels_per_row);
+    sobel_edge_detection_parallel<<<grid_sobel, block_sobel>>>(d_input_sobel, d_output_sobel, WIDTH, HEIGHT);
     HANDLE_ERROR(cudaDeviceSynchronize());
     checkCUDAError("Errore nella chiamata al kernel 'rgb_to_grayscale_parallel()'");
 
@@ -245,6 +275,20 @@ int main() {
     // Copy back the results
     HANDLE_ERROR(cudaMemcpy(h_output, d_output_sobel, size, cudaMemcpyDeviceToHost));
 
+    // Clean up
+    SDL_UnlockSurface(blurred);
+    SDL_FreeSurface(blurred);
+    cudaFree(d_input_sobel);
+    cudaFree(d_output_sobel);
+    
+    // Profiling
+    cudaEventRecord(stop, 0);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&time, start, stop);
+    printf("Kernel time: %.3f ms\n", time);
+    HANDLE_ERROR(cudaEventDestroy(start));
+    HANDLE_ERROR(cudaEventDestroy(stop));
+    
     // Create SDL surfcce (ARGB8888)
     SDL_Surface *final = SDL_CreateRGBSurfaceFrom(
         (void*) h_output,          // Pixel data
@@ -257,18 +301,6 @@ int main() {
         0x000000FF,               // Bmask
         0xFF000000                // Amask
     );
-
-    // Pulizia memoria device
-    cudaFree(d_input_sobel);
-    cudaFree(d_output_sobel);
-    
-    // Profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.3f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
     
     SDL_Window *window = create_window("RGB to grayscale");
     if (!window) {

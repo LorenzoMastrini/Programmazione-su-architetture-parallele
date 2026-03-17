@@ -29,7 +29,7 @@ __global__ void rgb_to_grayscale_parallel(const uchar4* __restrict__ input,
     const uint32_t thread_y = blockIdx.y * blockDim.y + threadIdx.y;
 
     // Lavoriamo in "unità vettoriali": ogni unità corrisponde a PIXELS_PER_THREAD pixel
-    const uint32_t vector_x        = thread_x;
+    const uint32_t vector_x = thread_x;
 
     // Fuori dai limiti orizzontali o verticali della slice -> il thread non elabora nulla
     if (vector_x >= VECTORS_PER_ROW ||
