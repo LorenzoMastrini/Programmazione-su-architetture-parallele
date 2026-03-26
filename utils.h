@@ -19,6 +19,8 @@
 #include <SDL2/SDL_image.h>
 #include <cuda_runtime.h>
 
+// How long to show the image (in millisecons)
+#define SHOW_IMAGE_FOR 3000
 // Macro to handle CUDA errors
 #define HANDLE_ERROR(err) HandleError(err, __FILE__, __LINE__)
 #define CUDA_CHECK(expr_to_check) do {                  \
@@ -39,5 +41,7 @@ void checkCUDAError(const char *msg);
 int init_SDL();
 SDL_Surface* load_img(const char* path);
 SDL_Window* create_window(const char* title);
+void show_image(const uchar4* rgba_image, int width, int height, const char* title);
+void show_image(const unsigned char* grayscale_image, int width, int height, const char* title);
 
 #endif

@@ -1,37 +1,39 @@
 #include "../utils.h"
 
-#define SHOW_IMAGE_FOR 3000 // How much time to show the image (3000 ms = 3 seconds)
 
 
+// Conversione di un'immagine da RGB a scala di grigi
+void rgb_to_grayscale(uchar4 *pixels, unsigned char *output, int number_of_pixels) {
+    for(int i = 0; i < number_of_pixels; i++) {
+        // Access each pixel
+        uchar4 p = pixels[i];
 
-// Conversione in-place di un'immagine da RGB a scala di grigi
-void rgb_to_grayscale(SDL_Surface *img) {
-    // Blocca la superficie per accedere ai pixel
-    SDL_LockSurface(img);
+        float r = p.x; // Red
+        float g = p.y; // Green
+        float b = p.z; // Blue
 
-    Uint32 *pixels = (Uint32*) img->pixels;
-    int pixel_per_row = img->pitch / 4; // numero di pixel (ciascuno Uint32, 1byte) per riga (pitch = #byte per riga)
-
-    for(int i = 0; i < pixel_per_row * img->h; i++) {
-        Uint32 p = pixels[i]; // accedo a ogni pixel
-
-            Uint8 r = (p >> 16) & 0xFF;
-            Uint8 g = (p >> 8) & 0xFF;
-            Uint8 b = p & 0xFF;
-
-            // Grayscale (formula based on non-linear human perception of color)
-            Uint8 gray = 0.3 * r + 0.59 * g + 0.11 * b;
-            pixels[i] = (gray << 16) | (gray << 8) | gray;
+        // Grayscale formula (based on non-linear human perception of color)
+        unsigned char gray = 0.3 * r + 0.59 * g + 0.11 * b;
+        output[i] = gray;
     }
-
-    SDL_UnlockSurface(img);
 }
+
 
 
 int main() {
     init_SDL();
 
     SDL_Surface *image = load_img("images/img.jpg");
+    SDL_LockSurface(image); // Lock to access pixels
+    const int width = image->w;
+    const int height = image->h;
+    const int number_of_pixels = width * height;
+
+    uchar4 *pixels = (uchar4*) image->pixels;
+    
+    // Output image
+    unsigned char* grayscale_image = (unsigned char*) malloc(number_of_pixels* sizeof(unsigned char));
+
 
     // Profiling
     cudaEvent_t start, stop;
@@ -40,8 +42,8 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
 
-    rgb_to_grayscale(image);
-    
+    rgb_to_grayscale(pixels, grayscale_image, number_of_pixels);
+
     // Profiling
     CUDA_CHECK(cudaEventRecord(stop, 0));
     CUDA_CHECK(cudaEventSynchronize(stop));
@@ -50,24 +52,13 @@ int main() {
     CUDA_CHECK(cudaEventDestroy(start));
     CUDA_CHECK(cudaEventDestroy(stop));
     
-    SDL_Window *window = create_window("RGB to grayscale");
 
-    // Get the surface window (where we will paint the image)
-    SDL_Surface *screen = SDL_GetWindowSurface(window);
-    if (!screen) {
-        printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
-        return 1;
-    }
+    show_image(grayscale_image, width, height, "Conversione da RGB a scala di grigi - Versione seriale");
 
-    // Copy the image in the window surface (correctly scaling the dimensions)
-    SDL_BlitScaled(image, NULL, screen, NULL);
-    SDL_UpdateWindowSurface(window);
-
-    SDL_Delay(SHOW_IMAGE_FOR); // Show the image for 3 seconds
-
-    // Free everything
+    // ----- Clean up -----
+    SDL_UnlockSurface(image);
     SDL_FreeSurface(image);
-    SDL_DestroyWindow(window);
+    free(grayscale_image);
     IMG_Quit();
     SDL_Quit();
 
