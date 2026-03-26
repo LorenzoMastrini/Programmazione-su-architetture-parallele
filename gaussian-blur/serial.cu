@@ -5,92 +5,123 @@
 #define HALF 10
 #define SIGMA 5.0
 
-float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
+float h_kernel[KERNEL_SIZE];
 
 // Genera il kernel gaussiano normalizzato a runtime
 void generate_gaussian_kernel() {
     double sum = 0.0;
-    
-    for (int y = -HALF; y <= HALF; y++) {
-        for (int x = -HALF; x <= HALF; x++) {
-            double value = exp(-(x*x + y*y) / (2.0 * SIGMA * SIGMA));
-            h_kernel[(y + HALF) * KERNEL_SIZE + (x + HALF)] = value;
-            sum += value;
-        }
+    for (int i = -HALF; i <= HALF; i++) {
+        double v = exp(-(i*i) / (2.0 * SIGMA * SIGMA));
+        h_kernel[i + HALF] = v;
+        sum += v;
     }
-    
-    // Normalizza
-    for (int i = 0; i < KERNEL_SIZE * KERNEL_SIZE; i++) {
+    for (int i = 0; i < KERNEL_SIZE; i++)
         h_kernel[i] /= sum;
-    }
 }
 
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
-    SDL_Surface* dst = SDL_CreateRGBSurface(
-        0,
-        src->w, src->h, 32,
+    SDL_Surface* tmp = SDL_CreateRGBSurface(
+        0, src->w, src->h, 32,
         src->format->Rmask,
         src->format->Gmask,
         src->format->Bmask,
         src->format->Amask
     );
 
-    if (!dst) {
-        fprintf(stderr, "Errore creazione superficie destinazione\n");
+    SDL_Surface* dst = SDL_CreateRGBSurface(
+        0, src->w, src->h, 32,
+        src->format->Rmask,
+        src->format->Gmask,
+        src->format->Bmask,
+        src->format->Amask
+    );
+
+    if (!tmp || !dst) {
+        fprintf(stderr, "Errore creazione superfici\n");
         return NULL;
     }
 
     SDL_LockSurface(src);
+    SDL_LockSurface(tmp);
     SDL_LockSurface(dst);
 
     int width = src->w;
     int height = src->h;
-    int pitch = src->pitch;
 
-    unsigned char* input  = (unsigned char*)src->pixels;
-    unsigned char* output = (unsigned char*)dst->pixels;
+    uchar4* input  = (uchar4*)src->pixels;
+    uchar4* buffer = (uchar4*)tmp->pixels;
+    uchar4* output = (uchar4*)dst->pixels;
 
     generate_gaussian_kernel();
 
+    // PASS 1: ORIZZONTALE
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
 
-            double r_sum = 0.0;
-            double g_sum = 0.0;
-            double b_sum = 0.0;
+            float4 sum = {0,0,0,0};
 
-            for (int ky = -HALF; ky <= HALF; ky++) {
-                for (int kx = -HALF; kx <= HALF; kx++) {
+            for (int k = -HALF; k <= HALF; k++) {
+                int px = x + k;
 
-                    int px = x + kx;
-                    int py = y + ky;
+                if (px < 0) px = 0;
+                if (px >= width) px = width - 1;
 
-                    // Clamp bordi (stessa logica CUDA)
-                    if (px < 0) px = 0;
-                    if (py < 0) py = 0;
-                    if (px >= width)  px = width - 1;
-                    if (py >= height) py = height - 1;
+                uchar4 p = input[y * width + px];
+                float w = h_kernel[k + HALF];
 
-                    int pixel_index = py * pitch + px * 4;
-                    double weight = h_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
-
-                    r_sum += input[pixel_index + 0] * weight;
-                    g_sum += input[pixel_index + 1] * weight;
-                    b_sum += input[pixel_index + 2] * weight;
-                }
+                sum.x += p.x * w;
+                sum.y += p.y * w;
+                sum.z += p.z * w;
+                sum.w += p.w * w;
             }
 
-            int out_index = y * pitch + x * 4;
-            output[out_index + 0] = (unsigned char)r_sum;
-            output[out_index + 1] = (unsigned char)g_sum;
-            output[out_index + 2] = (unsigned char)b_sum;
-            output[out_index + 3] = input[out_index + 3]; // alpha invariato
+            uchar4 out;
+            out.x = (unsigned char)sum.x;
+            out.y = (unsigned char)sum.y;
+            out.z = (unsigned char)sum.z;
+            out.w = (unsigned char)sum.w;
+
+            buffer[y * width + x] = out;
+        }
+    }
+
+    // PASS 2: VERTICALE
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+
+            float4 sum = {0,0,0,0};
+
+            for (int k = -HALF; k <= HALF; k++) {
+                int py = y + k;
+
+                if (py < 0) py = 0;
+                if (py >= height) py = height - 1;
+
+                uchar4 p = buffer[py * width + x];
+                float w = h_kernel[k + HALF];
+
+                sum.x += p.x * w;
+                sum.y += p.y * w;
+                sum.z += p.z * w;
+                sum.w += p.w * w;
+            }
+
+            uchar4 out;
+            out.x = (unsigned char)sum.x;
+            out.y = (unsigned char)sum.y;
+            out.z = (unsigned char)sum.z;
+            out.w = (unsigned char)sum.w;
+
+            output[y * width + x] = out;
         }
     }
 
     SDL_UnlockSurface(src);
+    SDL_UnlockSurface(tmp);
     SDL_UnlockSurface(dst);
+
+    SDL_FreeSurface(tmp);
 
     return dst;
 }

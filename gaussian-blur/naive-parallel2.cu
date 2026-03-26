@@ -1,13 +1,12 @@
-#include "../utils.cu"
+#include "../utils.h"
 #include <stdio.h>
 
 #define KERNEL_SIZE 21
-#define BLOCK_SIZE 16
+#define BLOCK_SIZE 32
 #define HALF 10
 #define SIGMA 5.0
 
-__constant__ float d_kernel_1d[KERNEL_SIZE];
-
+float *d_kernel_1d = nullptr;
 
 float h_kernel_1d[KERNEL_SIZE];
 
@@ -22,17 +21,20 @@ void generate_gaussian_kernel() {
         h_kernel_1d[i] /= sum;
 }
 
-void init_gaussian_kernel_once() {
+void init_gaussian_kernel() {
     static bool initialized = false;
     if (initialized) return;
 
     generate_gaussian_kernel();
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
+    if (d_kernel_1d == nullptr) {
+        HANDLE_ERROR(cudaMalloc(&d_kernel_1d, KERNEL_SIZE * sizeof(float)));
+    }
+    HANDLE_ERROR(cudaMemcpy(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     initialized = true;
 }
 
-__global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restrict__ *output, int width, int height){
+__global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restrict__ *output, const float *kernel, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -40,13 +42,12 @@ __global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restric
 
     float r = 0, g = 0, b = 0;
 
-    #pragma unroll
     for (int i = 0; i < KERNEL_SIZE; i++) {
         int k = i - HALF;
         int px = min(max(x + k, 0), width - 1);
 
         uchar4 pixel = input[y * width + px];
-        float w = d_kernel_1d[i];
+        float w = kernel[i];
 
         r += pixel.x * w;
         g += pixel.y * w;
@@ -63,7 +64,7 @@ __global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restric
     output[y*width+x] = out;
 }
 
-__global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict__ *output, int width, int height){
+__global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict__ *output, const float *kernel, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -71,14 +72,14 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
 
     float r = 0, g = 0, b = 0;
 
-    #pragma unroll
+    
     for (int i = 0; i < KERNEL_SIZE; i++) {
         int k = i - HALF;
         int py = min(max(y + k, 0), height - 1);
-        
+
         uchar4 pixel = input[py * width + x];
-        float w = d_kernel_1d[i];
-        
+        float w = kernel[i];
+
         r += pixel.x * w;
         g += pixel.y * w;
         b += pixel.z * w;
@@ -103,6 +104,9 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return NULL;
     }
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
@@ -113,33 +117,29 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
     uchar4 *d_input, *d_temp;
-    
+
+    cudaEventRecord(start);
     // Alloca memoria GPU
     HANDLE_ERROR(cudaMalloc(&d_input, bytes));
     HANDLE_ERROR(cudaMalloc(&d_temp, bytes));
 
     HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
-    init_gaussian_kernel_once();
+    init_gaussian_kernel();
     
     dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
     
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    
-    cudaEventRecord(start);
-    gaussian_horizontal<<<grid, block>>>(d_input, d_temp, width, height);
-    gaussian_vertical<<<grid, block>>>(d_temp, d_input, width, height );
+    gaussian_horizontal<<<grid, block>>>(d_input, d_temp, d_kernel_1d, width, height);
+    gaussian_vertical<<<grid, block>>>(d_temp, d_input, d_kernel_1d, width, height );
     checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+ 
+    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
     cudaEventRecord(stop);
-    
     cudaEventSynchronize(stop);
     float ms;
     cudaEventElapsedTime(&ms, start, stop);
     printf("Execution time: %.3f ms\n", ms);
 
-    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
     HANDLE_ERROR(cudaFree(d_input));
     HANDLE_ERROR(cudaFree(d_temp));
 
