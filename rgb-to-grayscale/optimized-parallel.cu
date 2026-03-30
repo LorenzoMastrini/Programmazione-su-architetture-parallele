@@ -74,34 +74,30 @@ int main() {
     CUDA_CHECK(cudaMalloc(&d_pixels_out, output_size)); // 1 byte per pixel
 
     // CUDA streams
-    // streams
     cudaStream_t streams[N_STREAMS];
     for (int i = 0; i < N_STREAMS; i++)
         CUDA_CHECK(cudaStreamCreate(&streams[i]));
 
-    // Number of slices used to divide the image, each handled by a stream
-    const int rows_per_slice = height / NUM_SLICES;
+    // Number of rows in each slide of the the image, each handled by a stream
+    const int rows_per_slice = height / NUM_SLICES;    
 
-    const int BLOCK_THREADS = BLOCK_X * BLOCK_Y; // 1D block size
-    dim3 block(BLOCK_THREADS);
+    // Get the number of Streaming Multiprocessor of the GPU
+    int numSMs;
+    cudaDeviceGetAttribute(&numSMs, cudaDevAttrMultiProcessorCount, 0);
+
+    dim3 block(256);
+    dim3 grid(32 * numSMs); // Optimize occupacy
 
     for (int i = 0; i < NUM_SLICES; i++) {
         int s = i % N_STREAMS;
-
         int start_row = i * rows_per_slice;
-        int current_rows = min(rows_per_slice, height - start_row);
-        if (current_rows <= 0) continue;
 
-        const int slice_pixels = width * current_rows;
-        const int work_per_block = BLOCK_THREADS * PIXELS_PER_THREAD;
-        dim3 grid((slice_pixels + work_per_block - 1) / work_per_block);
-
-        size_t in_size  = current_rows * width * sizeof(uchar4);
-        size_t out_size = current_rows * width * sizeof(unsigned char);
+        size_t in_size  = rows_per_slice * width * sizeof(uchar4);
+        size_t out_size = rows_per_slice * width * sizeof(unsigned char);
 
         uchar4 *slice_in  = d_pixels_in  + start_row * width;
         unsigned char *slice_out = d_pixels_out + start_row * width;
-
+        
         // HtoD
         CUDA_CHECK(cudaMemcpyAsync(slice_in,
                                    (uchar4*) image->pixels + start_row * width,
@@ -111,7 +107,7 @@ int main() {
 
         // Kernel
         rgb_to_grayscale_parallel<<<grid, block, 0, streams[s]>>>(
-            slice_in, slice_out, width, current_rows);
+            slice_in, slice_out, width, rows_per_slice);
         CUDA_CHECK(cudaGetLastError());
 
         // DtoH

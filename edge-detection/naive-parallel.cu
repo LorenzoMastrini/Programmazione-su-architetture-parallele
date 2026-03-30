@@ -213,7 +213,7 @@ int main() {
     CUDA_CHECK(cudaGetLastError());
 
     // Copy back the results
-    CUDA_CHECK(cudaMemcpy(h_output, d_edges, grayscale_size, cudaMemcpyDeviceToHost));    
+    CUDA_CHECK(cudaMemcpy(h_output, d_edges, grayscale_size, cudaMemcpyDeviceToHost));
     
     // Profiling
     CUDA_CHECK(cudaEventRecord(stop, 0));
