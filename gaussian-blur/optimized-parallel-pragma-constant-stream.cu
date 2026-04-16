@@ -97,9 +97,7 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
 
 // Funzione di Gaussian blur per immagine RGB
 SDL_Surface* gaussian_blur(SDL_Surface* src) {
-    SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
-                                            src->format->Rmask, src->format->Gmask,
-                                            src->format->Bmask, src->format->Amask);
+    SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32, src->format->Rmask, src->format->Gmask, src->format->Bmask, src->format->Amask);
     if (!dst) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return NULL;
