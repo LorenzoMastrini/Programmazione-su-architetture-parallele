@@ -180,7 +180,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    SDL_Surface* image = load_img("images/img.jpg");
+    SDL_Surface* image = load_img(IMG_PATH);
     
     SDL_Surface* blurred = gaussian_blur(image);
     if (!blurred) {

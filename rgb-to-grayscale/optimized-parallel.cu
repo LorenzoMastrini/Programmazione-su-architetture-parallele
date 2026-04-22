@@ -47,7 +47,7 @@ __global__ void rgb_to_grayscale_parallel(const uchar4* __restrict__ input,
 int main() {
     init_SDL();
 
-    SDL_Surface *image = load_img("images/img.jpg");
+    SDL_Surface *image = load_img(IMG_PATH);
     SDL_LockSurface(image); // Lock to access pixels
     const int width = image->w;
     const int height = image->h;

@@ -18,6 +18,9 @@
 #define STREAM_POOL_SIZE 4
 #define N_CHUNKS 16
 
+#define HALO_TOTAL (HALF + 1) // Gaussian (10) + Sobel (1) = 11
+
+
 
 
 // ---------- RGB TO GRAYSCALE ----------
@@ -116,9 +119,9 @@ __global__ void gaussian_horizontal(unsigned char *input, unsigned char *output,
 
         gray += pixel * w;
     }
-
-    output[y*width + x] = gray;
-} // End gaussian_horizontal()
+    
+    output[y*width+x] = (unsigned char) gray;
+}
 
 __global__ void gaussian_vertical(unsigned char *input, unsigned char *output, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -156,13 +159,14 @@ __global__ void gaussian_vertical(unsigned char *input, unsigned char *output, i
 
         gray += pixel * w;
     }
+    
+    output[y*width+x] = (unsigned char) gray;
+}
 
-    output[y*width + x] = gray;
-} // End gaussian_vertical()
 
 
-/*
 // ---------- SOBEL EDGE DETECTION ----------
+/*
 __global__ void sobel_edge_detection_parallel(unsigned char *input,
                                               unsigned char *output,
                                               int slice_width,
@@ -327,12 +331,12 @@ __global__ void sobel_edge_detection_parallel(unsigned char *input,
 int main() {
     init_SDL();
 
-    SDL_Surface *image = load_img("images/img.jpg");
+    SDL_Surface *image = load_img(IMG_PATH);
     SDL_LockSurface(image); // Lock to access pixels
     const int width = image->w;
     const int height = image->h;
-    int rgb_size = width * height * sizeof(uchar4); // Size of RGB images
-    int grayscale_size = width * height * sizeof(unsigned char); // Size of grayscale images
+    int rgb_size = width * height * sizeof(uchar4); // Size of RGB image (4 bytes per pixel)
+    int grayscale_size = width * height * sizeof(unsigned char); // Size of grayscale images (1 byte per pixel)
 
     // Register existing buffer as page-locked (pinned) memory
     CUDA_CHECK(cudaHostRegister(image->pixels, rgb_size, cudaHostRegisterPortable));
@@ -348,13 +352,11 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
 
-    
-    // ---------- RGB TO GRAYSCALE ----------
     // Allocate GPU memory
     uchar4 *d_input; // Original RGB pixels
     unsigned char *d_work; // Working array in all the pipeline
     CUDA_CHECK(cudaMalloc(&d_input, rgb_size));
-    CUDA_CHECK(cudaMalloc(&d_work, grayscale_size)); // 1 byte per pixel
+    CUDA_CHECK(cudaMalloc(&d_work, grayscale_size));
 
     // CUDA streams
     cudaStream_t streams[N_STREAMS];
@@ -392,49 +394,90 @@ int main() {
     // Stream cycle
     for (int i = 0; i < NUM_SLICES; i++) {
         int s = i % N_STREAMS;
+
         int start_row = i * rows_per_slice;
+        int end_row   = start_row + rows_per_slice;
 
-        // Input and output array size for each stream
-        size_t in_size  = rows_per_slice * width * sizeof(uchar4); // RGB pixels
-        size_t out_size = rows_per_slice * width * sizeof(unsigned char); // Grayscale pixels
+        // --- Estensione con halo ---
+        int copy_start = max(0, start_row - HALO_TOTAL);
+        int copy_end   = min(height, end_row + HALO_TOTAL);
 
-        uchar4 *slice_input  = d_input  + start_row * width; // RGB pixels
-        unsigned char *slice_work = d_work + start_row * width; // Grasyscale pixels, reused multiple times
-        
-        // HtoD
-        CUDA_CHECK(cudaMemcpyAsync(slice_input,
-                                   (uchar4*) image->pixels + start_row * width,
-                                   in_size,
-                                   cudaMemcpyHostToDevice,
-                                   streams[s]));
+        int extended_rows = copy_end - copy_start;
 
-        // --- RGB to grayscale ---
-        rgb_to_grayscale_parallel<<<grid, block, 0, streams[s]>>>(slice_input, slice_work, width, rows_per_slice);
+        // Offset interno (dove inizia la parte "valida")
+        int local_offset = start_row - copy_start;
+
+        // Dimensioni memoria
+        size_t in_size  = extended_rows * width * sizeof(uchar4);
+        size_t out_size = rows_per_slice * width * sizeof(unsigned char);
+
+        // Puntatori device
+        uchar4 *slice_input  = d_input  + copy_start * width;
+        unsigned char *slice_work = d_work + copy_start * width;
+        unsigned char *slice_tmp  = d_temp_gaussian + copy_start * width;
+
+        // ---------------- HtoD ----------------
+        CUDA_CHECK(cudaMemcpyAsync(
+            slice_input,
+            (uchar4*)image->pixels + copy_start * width,
+            in_size,
+            cudaMemcpyHostToDevice,
+            streams[s]
+        ));
+
+        // ---------------- RGB → GRAY ----------------
+        rgb_to_grayscale_parallel<<<grid, block, 0, streams[s]>>>(
+            slice_input,
+            slice_work,
+            width,
+            extended_rows
+        );
         CUDA_CHECK(cudaGetLastError());
 
-        // --- Gaussian Blur ---
-        unsigned char *slice_tmp = d_temp_gaussian  + static_cast<size_t>(start_row) * width;
+        // ---------------- GAUSSIAN ----------------
+        dim3 grid_gaussian_local(
+            (width + BLOCK_SIZE - 1) / BLOCK_SIZE,
+            (extended_rows + BLOCK_SIZE - 1) / BLOCK_SIZE
+        );
 
-        // Horizontal and vertical blur of the current slice
-        gaussian_horizontal<<<grid_gaussian, block_gaussian, 0, streams[s]>>>(slice_work, slice_tmp, width, rows_per_slice);
-        CUDA_CHECK(cudaGetLastError());
-        gaussian_vertical<<<grid_gaussian, block_gaussian, 0, streams[s]>>>(slice_tmp, slice_work, width, rows_per_slice);
-        CUDA_CHECK(cudaGetLastError());
-
-        // --- Sobel Edge Detection ---
-        sobel_edge_detection_parallel<<<grid_sobel, block_sobel, 0, streams[s]>>>(
+        gaussian_horizontal<<<grid_gaussian_local, block_gaussian, 0, streams[s]>>>(
             slice_work,
             slice_tmp,
             width,
-            rows_per_slice);
+            extended_rows
+        );
         CUDA_CHECK(cudaGetLastError());
 
-        // DtoH
-        CUDA_CHECK(cudaMemcpyAsync(h_output + start_row * width,
-                                   slice_tmp, // Contains final result
-                                   out_size,
-                                   cudaMemcpyDeviceToHost,
-                                   streams[s]));
+        gaussian_vertical<<<grid_gaussian_local, block_gaussian, 0, streams[s]>>>(
+            slice_tmp,
+            slice_work,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        // ---------------- SOBEL ----------------
+        dim3 grid_sobel_local(
+            (width + BLOCK_X - 1) / BLOCK_X,
+            (extended_rows + BLOCK_Y - 1) / BLOCK_Y
+        );
+
+        sobel_edge_detection_parallel<<<grid_sobel_local, block_sobel, 0, streams[s]>>>(
+            slice_work,
+            slice_tmp,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        // ---------------- DtoH (solo parte valida) ----------------
+        CUDA_CHECK(cudaMemcpyAsync(
+            h_output + start_row * width,
+            slice_tmp + local_offset * width,
+            out_size,
+            cudaMemcpyDeviceToHost,
+            streams[s]
+        ));
     }
     
     // Wait for all streams to finish
