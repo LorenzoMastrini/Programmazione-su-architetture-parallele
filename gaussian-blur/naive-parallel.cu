@@ -118,28 +118,42 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     size_t bytes = num_pixels * sizeof(uchar4);
     uchar4 *d_input, *d_temp;
 
-    cudaEventRecord(start);
-    
+    init_gaussian_kernel();
+
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
+
     // Alloca memoria GPU
     HANDLE_ERROR(cudaMalloc(&d_input, bytes));
     HANDLE_ERROR(cudaMalloc(&d_temp, bytes));
 
-    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
-    init_gaussian_kernel();
-    
     dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
-    
+
+    // HtoD
+    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
+
     gaussian_horizontal<<<grid, block>>>(d_input, d_temp, d_kernel_1d, width, height);
     gaussian_vertical<<<grid, block>>>(d_temp, d_input, d_kernel_1d, width, height );
     checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
- 
+
+    // DtoH
     HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
-    printf("Execution time: %.3f ms\n", ms);
+
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Total CUDA time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    
+    // -------------------------------------------------- END CUDA --------------------------------------------------
 
     HANDLE_ERROR(cudaFree(d_input));
     HANDLE_ERROR(cudaFree(d_temp));
@@ -231,7 +245,5 @@ int main(int argc, char* argv[]) {
     IMG_Quit();
     SDL_Quit();
 
-
     return 0;
 }
-

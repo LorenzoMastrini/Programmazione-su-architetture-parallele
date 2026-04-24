@@ -293,13 +293,15 @@ int main() {
         CUDA_CHECK(cudaStreamCreate(&streams[i]));
 
     // Number of rows in a slice, each handled by a stream
-    const int slice_height = height / NUM_SLICES;    
+    const int slice_height = (int) height / NUM_SLICES;    
 
     generate_gaussian_kernel();
 
-    // Block for Gaussian Blur and Sobel
+    // CUDA block for grayscale conversion
+    dim3 block_grayscale(256);
+    // CUDA block for Gaussian Blur and Sobel
     dim3 block(BLOCK_X, BLOCK_Y);
-
+    
     // Stream cycle
     for (int i = 0; i < NUM_SLICES; i++) {
         int s = i % N_STREAMS;
@@ -339,7 +341,7 @@ int main() {
         int total_pixels = width * extended_rows;
         dim3 grid_gray((total_pixels / PIXELS_PER_THREAD + 255) / 256);
 
-        rgb_to_grayscale_parallel<<<grid_gray, block, 0, streams[s]>>>(
+        rgb_to_grayscale_parallel<<<grid_gray, block_grayscale, 0, streams[s]>>>(
             slice_input,
             slice_work,
             width,
@@ -376,7 +378,7 @@ int main() {
         // ---------------- DtoH (solo parte valida) ----------------
         CUDA_CHECK(cudaMemcpyAsync(
             h_output + start_row * width,
-            slice_tmp + HALO_ROWS * width,
+            slice_tmp, 
             out_size,
             cudaMemcpyDeviceToHost,
             streams[s]

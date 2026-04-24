@@ -52,7 +52,13 @@ int main() {
     const int output_size = width * height * sizeof(unsigned char);
 
     // -------------------------------------------------- CUDA --------------------------------------------------
-
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
+    
     // Register existing buffer as page-locked (pinned) memory
     CUDA_CHECK(cudaHostRegister(image->pixels, input_size, cudaHostRegisterPortable));
     unsigned char *h_output; // Output image
@@ -78,13 +84,6 @@ int main() {
 
     dim3 block(256);
     dim3 grid(32 * numSMs); // Optimize occupacy
-
-    // Profiling
-    cudaEvent_t start, stop;
-    float time;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start, 0));
 
     for (int i = 0; i < NUM_SLICES; i++) {
         int s = i % N_STREAMS;

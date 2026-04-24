@@ -137,43 +137,46 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
         return NULL;
     }
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
 
     SDL_LockSurface(src);
     SDL_LockSurface(dst);
 
     int width = src->w;
     int height = src->h;
+    const int rows_per_chunk = (height + N_CHUNKS - 1) / N_CHUNKS;
+    const int max_halo_rows = min(height, rows_per_chunk + 2 * HALF);
 
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
+    const size_t stream_buffer_size = (size_t)max_halo_rows * width * sizeof(uchar4);
+    
+    init_gaussian_kernel_once();
+
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     HANDLE_ERROR(cudaHostRegister(src->pixels, bytes, cudaHostRegisterPortable));
     HANDLE_ERROR(cudaHostRegister(dst->pixels, bytes, cudaHostRegisterPortable));
 
-    cudaEventRecord(start);
-    init_gaussian_kernel_once();
-
-    const int rows_per_chunk = (height + N_CHUNKS - 1) / N_CHUNKS;
-    const int max_halo_rows = min(height, rows_per_chunk + 2 * HALF);
-    const size_t stream_buffer_size = (size_t)max_halo_rows * width * sizeof(uchar4);
     cudaStream_t streams[STREAM_POOL_SIZE];
     uchar4* d_stream_in[STREAM_POOL_SIZE];
     uchar4* d_stream_tmp[STREAM_POOL_SIZE];
 
-    dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
-    
-   // Crea un pool fisso di stream e relativi buffer privati.
-   for (int s = 0; s < STREAM_POOL_SIZE; s++) {
+    dim3 block(BLOCK_SIZE, BLOCK_SIZE);
+
+    // Crea un pool fisso di stream e relativi buffer privati.
+    for (int s = 0; s < STREAM_POOL_SIZE; s++) {
         cudaStreamCreate(&streams[s]);
         HANDLE_ERROR(cudaMalloc(&d_stream_in[s], stream_buffer_size));
         HANDLE_ERROR(cudaMalloc(&d_stream_tmp[s], stream_buffer_size));
-   }
+    }
 
-   
-   for (int i = 0; i < N_CHUNKS; i++) {
+    for (int i = 0; i < N_CHUNKS; i++) {
         int stream_id = i % STREAM_POOL_SIZE;
         cudaStream_t stream = streams[stream_id];
 
@@ -184,7 +187,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
         int end_row = min(start_row + rows_per_chunk, height);
 
-        
         int halo_start = max(0, start_row - HALF);
         int halo_end   = min(height, end_row + HALF);
 
@@ -202,32 +204,34 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         uchar4 *h_slice_in  = reinterpret_cast<uchar4*>(src->pixels) + (size_t)halo_start * width;
         uchar4 *h_slice_out = reinterpret_cast<uchar4*>(dst->pixels) + (size_t)start_row * width;
 
-        
         HANDLE_ERROR(cudaMemcpyAsync(d_slice_in, h_slice_in, halo_size, cudaMemcpyHostToDevice, stream));
-
-        dim3 block(BLOCK_SIZE, BLOCK_SIZE);
+        
         dim3 grid((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (halo_rows + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
-        
         gaussian_horizontal<<<grid, block, 0, stream>>>(d_slice_in, d_slice_tmp, width, halo_rows);
-
         gaussian_vertical<<<grid, block, 0, stream>>>(d_slice_tmp, d_slice_in, width, halo_rows);
 
         HANDLE_ERROR(cudaMemcpyAsync(h_slice_out, d_slice_in + (size_t)(start_row - halo_start) * width, valid_size, cudaMemcpyDeviceToHost, stream));
-    }   
+    }
+
+    // Wait for all streams to finish
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Total CUDA time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    
+    // -------------------------------------------------- END CUDA --------------------------------------------------
 
     for(int s = 0; s < STREAM_POOL_SIZE; s++) {
-        HANDLE_ERROR(cudaStreamSynchronize(streams[s]));
         HANDLE_ERROR(cudaFree(d_stream_in[s]));
         HANDLE_ERROR(cudaFree(d_stream_tmp[s]));
         HANDLE_ERROR(cudaStreamDestroy(streams[s]));
     }
- 
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
-    printf("Execution time: %.3f ms\n", ms);
 
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(dst);

@@ -5,6 +5,5 @@
 *.cubin
 *.fatbin
 *.bmp
-serial
-naive-parallel
-optimized-parallel
+.cursor
+.vscode

@@ -55,7 +55,14 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     generate_gaussian_kernel();
 
-    // PASS 1: ORIZZONTALE
+    // -------------------------------------------------- CUDA --------------------------------------------------
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
+
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
 
@@ -117,6 +124,17 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         }
     }
 
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Total CUDA time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
+    
+    // -------------------------------------------------- END CUDA --------------------------------------------------
+
+    
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(tmp);
     SDL_UnlockSurface(dst);
@@ -129,10 +147,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 int main(int argc, char* argv[]) {
     init_SDL();
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-
+    // Ottieni le dimensioni dello schermo per posizionare le finestre
     SDL_DisplayMode dm;
     if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
         fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
@@ -180,9 +195,7 @@ int main(int argc, char* argv[]) {
     SDL_Surface* image = load_img(IMG_PATH);
     generate_gaussian_kernel();
 
-    cudaEventRecord(start);
     SDL_Surface* blurred = gaussian_blur(image);
-    cudaEventRecord(stop);
     if (!blurred) {
         fprintf(stderr, "Errore durante il Gaussian blur\n");
         SDL_FreeSurface(image);
@@ -192,10 +205,6 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-
-    cudaEventSynchronize(stop);
-    float ms;
-    cudaEventElapsedTime(&ms, start, stop);
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
 
@@ -215,6 +224,5 @@ int main(int argc, char* argv[]) {
     IMG_Quit();
     SDL_Quit();
 
-    printf("Execution time: %.3f ms\n", ms);
     return 0;
 }
