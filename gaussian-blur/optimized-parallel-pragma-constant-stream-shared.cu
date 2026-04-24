@@ -200,7 +200,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         uchar4 *d_slice_in  = d_stream_in[stream_id];
         uchar4 *d_slice_tmp = d_stream_tmp[stream_id];
 
-        // Puntatori host
         uchar4 *h_slice_in  = reinterpret_cast<uchar4*>(src->pixels) + (size_t)halo_start * width;
         uchar4 *h_slice_out = reinterpret_cast<uchar4*>(dst->pixels) + (size_t)start_row * width;
 
@@ -218,7 +217,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         HANDLE_ERROR(cudaMemcpyAsync(h_slice_out, d_slice_in + (size_t)(start_row - halo_start) * width, valid_size, cudaMemcpyDeviceToHost, stream));
     }   
 
-    // Drain finale e rilascio stream del pool
     for(int s = 0; s < STREAM_POOL_SIZE; s++) {
         HANDLE_ERROR(cudaStreamSynchronize(streams[s]));
         HANDLE_ERROR(cudaFree(d_stream_in[s]));
@@ -242,7 +240,6 @@ int main(int argc, char* argv[]) {
     init_SDL();
     cudaFree(0);
     
-    // Ottieni le dimensioni dello schermo per posizionare le finestre
     SDL_DisplayMode dm;
     if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
         fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
@@ -263,10 +260,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Posiziona le finestre una di fianco all'altra
-    // Prima finestra a sinistra
     SDL_SetWindowPosition(windowNormal, 0, 0);
-    // Seconda finestra a destra (metà schermo)
     SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
     
     SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
@@ -306,14 +300,12 @@ int main(int argc, char* argv[]) {
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
 
-    // Mostra entrambe le immagini contemporaneamente
     SDL_BlitScaled(image, NULL, screenNormal, NULL);
     SDL_UpdateWindowSurface(windowNormal);
     
     SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
     SDL_UpdateWindowSurface(windowBlur);
     
-    // Attendi prima di chiudere
     SDL_Delay(4000);
     
     SDL_DestroyWindow(windowNormal);

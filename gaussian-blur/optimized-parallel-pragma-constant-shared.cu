@@ -42,13 +42,10 @@ __global__ void gaussian_horizontal_shared(uchar4* __restrict__ input, uchar4* _
 
     int shared_x = tx + HALF;
 
-    // Clamp dei bordi: in questo modo anche i thread vicino ai margini
-    // (o oltre i bounds del frame) inizializzano comunque tutti i valori
-    // che verranno letti dal filtro.
     int xc = min(max(x, 0), width - 1);
     int yc = min(max(y, 0), height - 1);
 
-    // Carica pixel centrale (sempre, con coordinate clamped)
+    // pixel centrale
     tile[ty][shared_x] = input[yc * width + xc];
 
     
@@ -100,11 +97,10 @@ __global__ void gaussian_vertical_shared(uchar4* __restrict__ input,uchar4* __re
 
     int shared_y = ty + HALF;
 
-    // Clamp dei bordi per letture sicure e tile sempre inizializzato.
     int xc = min(max(x, 0), width - 1);
     int yc = min(max(y, 0), height - 1);
 
-    // centro
+    // pixel centrale
     tile[shared_y][tx] = input[yc * width + xc];
 
     // halo sopra
@@ -203,7 +199,7 @@ int main(int argc, char* argv[]) {
     init_SDL();
     cudaFree(0);
     
-    // Ottieni le dimensioni dello schermo per posizionare le finestre
+    
     SDL_DisplayMode dm;
     if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
         fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
@@ -224,10 +220,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Posiziona le finestre una di fianco all'altra
-    // Prima finestra a sinistra
     SDL_SetWindowPosition(windowNormal, 0, 0);
-    // Seconda finestra a destra (metà schermo)
     SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
     
     SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
@@ -267,14 +260,12 @@ int main(int argc, char* argv[]) {
 
     SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
 
-    // Mostra entrambe le immagini contemporaneamente
     SDL_BlitScaled(image, NULL, screenNormal, NULL);
     SDL_UpdateWindowSurface(windowNormal);
     
     SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
     SDL_UpdateWindowSurface(windowBlur);
     
-    // Attendi prima di chiudere
     SDL_Delay(4000);
     
     SDL_DestroyWindow(windowNormal);
