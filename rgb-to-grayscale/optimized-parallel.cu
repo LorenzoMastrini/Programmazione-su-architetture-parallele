@@ -3,9 +3,6 @@
 #include <stdio.h>
 #include "../utils.h"
 
-// Block dimensions fine-tuned to optimize occupancy
-#define BLOCK_X 32
-#define BLOCK_Y 8
 #define N_STREAMS 8
 #define NUM_SLICES 8 // Image height must be divisible by NUM_SLICES
 #define PIXELS_PER_THREAD 4
@@ -54,18 +51,12 @@ int main() {
     const int input_size = width * height * sizeof(uchar4);
     const int output_size = width * height * sizeof(unsigned char);
 
+    // -------------------------------------------------- CUDA --------------------------------------------------
+
     // Register existing buffer as page-locked (pinned) memory
     CUDA_CHECK(cudaHostRegister(image->pixels, input_size, cudaHostRegisterPortable));
     unsigned char *h_output; // Output image
     CUDA_CHECK(cudaMallocHost(&h_output, output_size));
-
-    // -------------------------------------------------- CUDA --------------------------------------------------
-    // Profiling
-    cudaEvent_t start, stop;
-    float time;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start, 0));
 
     // Allocate GPU memory
     uchar4 *d_pixels_in;
@@ -87,6 +78,13 @@ int main() {
 
     dim3 block(256);
     dim3 grid(32 * numSMs); // Optimize occupacy
+
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     for (int i = 0; i < NUM_SLICES; i++) {
         int s = i % N_STREAMS;

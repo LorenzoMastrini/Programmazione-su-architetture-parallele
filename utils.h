@@ -21,7 +21,7 @@
 
 // How long to show the image (in millisecons)
 #define SHOW_IMAGE_FOR 3000
-#define IMG_PATH "images/img.jpg"
+#define IMG_PATH "images/img16k.jpg"
 // Macro to handle CUDA errors
 #define HANDLE_ERROR(err) HandleError(err, __FILE__, __LINE__)
 #define CUDA_CHECK(expr_to_check) do {                  \

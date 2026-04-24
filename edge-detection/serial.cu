@@ -146,7 +146,6 @@ int main() {
     // Edge detection output
     unsigned char* edges = (unsigned char*) malloc(number_of_pixels * sizeof(unsigned char));
 
-
     // Profiling
     cudaEvent_t start, stop;
     float time;

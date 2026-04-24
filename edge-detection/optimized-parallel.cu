@@ -266,12 +266,6 @@ int main() {
     int rgb_size = width * height * sizeof(uchar4); // Size of RGB image (4 bytes per pixel)
     int grayscale_size = width * height * sizeof(unsigned char); // Size of grayscale images (1 byte per pixel)
 
-    // Register existing buffer as page-locked (pinned) memory
-    CUDA_CHECK(cudaHostRegister(image->pixels, rgb_size, cudaHostRegisterPortable));
-    // Host output buffer (pinned memory)
-    unsigned char *h_output;
-    CUDA_CHECK(cudaMallocHost(&h_output, grayscale_size));
-
     // -------------------------------------------------- CUDA --------------------------------------------------
     // Profiling
     cudaEvent_t start, stop;
@@ -279,6 +273,12 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
+
+    // Register existing buffer as page-locked (pinned) memory
+    CUDA_CHECK(cudaHostRegister(image->pixels, rgb_size, cudaHostRegisterPortable));
+    // Host output buffer (pinned memory)
+    unsigned char *h_output;
+    CUDA_CHECK(cudaMallocHost(&h_output, grayscale_size));
 
     // Allocate GPU memory
     uchar4 *d_input; // Original RGB pixels

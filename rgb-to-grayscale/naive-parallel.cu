@@ -47,12 +47,11 @@ int main() {
     CUDA_CHECK(cudaEventCreate(&start));
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
-
+    
     // Allocate GPU memory
     // Input
     uchar4 *d_pixels_input;
     CUDA_CHECK(cudaMalloc(&d_pixels_input, input_size));
-    CUDA_CHECK(cudaMemcpy(d_pixels_input, image->pixels, input_size, cudaMemcpyHostToDevice));
     //Output
     unsigned char *d_pixels_output;
     CUDA_CHECK(cudaMalloc(&d_pixels_output, output_size));
@@ -62,11 +61,14 @@ int main() {
     dim3 grid((width + block.x - 1) / block.x, // 240
               (height + block.y - 1) / block.y); // 135
 
+    // HtoD
+    CUDA_CHECK(cudaMemcpy(d_pixels_input, image->pixels, input_size, cudaMemcpyHostToDevice));
+
     rgb_to_grayscale_parallel<<<grid, block>>>(d_pixels_input, d_pixels_output, width, height); // Run the kernel
     CUDA_CHECK(cudaGetLastError());
     cudaDeviceSynchronize();
 
-    // Copy back the results
+    // DtoH, copy back the results
     CUDA_CHECK(cudaMemcpy(grayscale_image, d_pixels_output, output_size, cudaMemcpyDeviceToHost)); // Implicit barrier
 
     // Profiling

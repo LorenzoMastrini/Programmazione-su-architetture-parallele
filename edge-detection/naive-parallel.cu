@@ -181,9 +181,17 @@ int main() {
     // Allocate GPU memory
     uchar4 *d_pixels;
     CUDA_CHECK(cudaMalloc(&d_pixels, rgb_size));
-    CUDA_CHECK(cudaMemcpy(d_pixels, image->pixels, rgb_size, cudaMemcpyHostToDevice));
     unsigned char *d_grayscale;
     CUDA_CHECK(cudaMalloc(&d_grayscale, grayscale_size));
+    // Gaussian Blur
+    unsigned char *d_blurred;
+    CUDA_CHECK(cudaMalloc(&d_blurred, grayscale_size));
+    // Sobel Edge Detection
+    unsigned char *d_edges;
+    CUDA_CHECK(cudaMalloc(&d_edges, grayscale_size));
+
+    // HtoD
+    CUDA_CHECK(cudaMemcpy(d_pixels, image->pixels, rgb_size, cudaMemcpyHostToDevice));
 
     // RGB to grayscale kernel
     rgb_to_grayscale_parallel<<<grid, block>>>(d_pixels, d_grayscale, width, height);
@@ -192,9 +200,6 @@ int main() {
 
 
     // ---------- GAUSSIAN BLUR ----------
-    unsigned char *d_blurred;
-    CUDA_CHECK(cudaMalloc(&d_blurred, grayscale_size));
-    
     // Genera e copia il kernel gaussiano nella memoria costante della GPU
     init_gaussian_kernel();
     // Kernel launch
@@ -204,15 +209,12 @@ int main() {
 
     
     // ---------- SOBEL EDGE DETECTION ----------
-    unsigned char *d_edges;
-    CUDA_CHECK(cudaMalloc(&d_edges, grayscale_size));
-
     // CUDA Kernel
     sobel_edge_detection_parallel<<<grid, block>>>(d_blurred, d_edges, width, height);
     CUDA_CHECK(cudaDeviceSynchronize());
     CUDA_CHECK(cudaGetLastError());
 
-    // Copy back the results
+    // DtoH, copy back the results
     CUDA_CHECK(cudaMemcpy(h_output, d_edges, grayscale_size, cudaMemcpyDeviceToHost));
     
     // Profiling
