@@ -163,7 +163,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     uchar4* d_stream_in[STREAM_POOL_SIZE];
     uchar4* d_stream_tmp[STREAM_POOL_SIZE];
 
-    dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
     dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
     
    // Crea un pool fisso di stream e relativi buffer privati.
