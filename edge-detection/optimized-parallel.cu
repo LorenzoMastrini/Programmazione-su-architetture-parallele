@@ -1,462 +1,413 @@
 #include <math.h>
 #include "../utils.h"
 
-// We work with 8K images (7680x4320 pixels)
-#define WIDTH 7680
-#define HEIGHT 4320
 // Block dimensions fine-tuned to optimize occupancy
 #define BLOCK_X 32
-#define BLOCK_Y 8
+#define BLOCK_Y 16
 
 // RGB to grayscale constants
-#define N_STREAMS 16
+#define N_STREAMS 8
+#define NUM_SLICES 8 // Image height must be divisible by NUM_SLICES
 #define PIXELS_PER_THREAD 4
 
 // Gaussian Blur constants
 #define KERNEL_SIZE 21
 #define HALF 10
 #define SIGMA 5.0
-#define SHOW_IMAGE_FOR 3000 // How much time to show the image (3000 ms = 3 seconds)
-
-
+// This is the number of rows to be added to the upper and lower bounds of each
+// slice to avoid artifacts during Gaussian Blur and Sobel
+#define HALO_ROWS HALF
 
 
 
 // ---------- RGB TO GRAYSCALE ----------
 // Use constant memory to access constants to be used in the kernel
-__constant__ __device__ float GRAY_COEF[3] = {0.2126f, 0.7152f, 0.0722f};
-__constant__ __device__ uint32_t D_WIDTH = WIDTH;
-__constant__ __device__ uint32_t VECTORS_PER_ROW = WIDTH / PIXELS_PER_THREAD; // assumiamo D_WIDTH multiplo di PIXELS_PER_THREAD
+__constant__ float GRAY_COEF[3] = {0.213f, 0.715f, 0.072f};
 
-// Ogni thread elabora PIXELS_PER_THREAD pixel consecutivi sulla stessa riga,
-// usando accessi vettoriali (uint4) per massimizzare coalescing e banda di memoria.
+__device__ __forceinline__ unsigned char to_gray(const uchar4 p) {
+    // fmaf(a, b, c): (a x b) + c
+    return (unsigned char) fmaf(GRAY_COEF[2], p.z, fmaf(GRAY_COEF[1], p.y, GRAY_COEF[0] * p.x));
+} // End to-gray()
+
+// Ogni thread elabora PIXELS_PER_THREAD pixel consecutivi in memoria
+// Il `grid-stride loop` è su un unico indice lineare, così `grid` e `block` possono essere 1D.
 __global__ void rgb_to_grayscale_parallel(const uchar4* __restrict__ input,
-                                          uint8_t* __restrict__ output,
-                                          int rows_per_stream) {
-    // Coordinate del thread all'interno della slice elaborata dallo stream
-    const uint32_t thread_x = blockIdx.x * blockDim.x + threadIdx.x;
-    const uint32_t thread_y = blockIdx.y * blockDim.y + threadIdx.y;
+                                          unsigned char* __restrict__ output,
+                                          int slice_width,
+                                          int slice_height) {
+    const int total_pixels = slice_width * slice_height;
 
-    // Lavoriamo in "unità vettoriali": ogni unità corrisponde a PIXELS_PER_THREAD pixel
-    const uint32_t vector_x = thread_x;
+    // Grid-stride loop su indice lineare, ma distribuendo i PIXELS_PER_THREAD
+    // con passo = blockDim.x per evitare overlap tra thread.
+    const int base0 = blockIdx.x * blockDim.x * PIXELS_PER_THREAD + threadIdx.x;
+    const int stride = gridDim.x * blockDim.x * PIXELS_PER_THREAD;
 
-    // Fuori dai limiti orizzontali o verticali della slice -> il thread non elabora nulla
-    if (vector_x >= VECTORS_PER_ROW ||
-        thread_y >= static_cast<uint32_t>(rows_per_stream)) {
-        return;
+    for (int base = base0; base < total_pixels; base += stride) {
+        #pragma unroll
+        for (int i = 0; i < PIXELS_PER_THREAD; i++) {
+            const int pixel_idx = base + i * blockDim.x;
+            if (pixel_idx < total_pixels)
+                output[pixel_idx] = to_gray(input[pixel_idx]);
+        }
     }
-
-    // Indice del gruppo vettoriale (PIXELS_PER_THREAD pixel) in un array lineare di uint4
-    const uint32_t vector_index = thread_y * VECTORS_PER_ROW + vector_x;
-
-    // Caricamento vettoriale: 4 pixel RGBA (16 byte) da memoria globale
-    const uint4 rgba_vec = reinterpret_cast<const uint4*>(input)[vector_index];
-
-    // Interpretiamo i 16 byte di rgba_vec come 4 struct uchar4 consecutivi
-    const uchar4* rgba_pixels = reinterpret_cast<const uchar4*>(&rgba_vec);
-
-    // Buffer locale con i valori di luminanza (1 byte per pixel)
-    uint8_t gray[PIXELS_PER_THREAD];
-
-    #pragma unroll
-    for (int i = 0; i < PIXELS_PER_THREAD; ++i) {
-        const uchar4 p = rgba_pixels[i];
-
-        const float r = static_cast<float>(p.x);
-        const float g = static_cast<float>(p.y);
-        const float b = static_cast<float>(p.z);
-
-        // Conversione RGB -> luminanza usando le costanti GRAY_COEF in memoria costante
-        const float y = GRAY_COEF[0] * r +
-                        GRAY_COEF[1] * g +
-                        GRAY_COEF[2] * b;
-
-        gray[i] = static_cast<uint8_t>(y);
-    }
-
-    // Pack dei 4 byte di luminanza in una singola word a 32 bit
-    // (funziona correttamente perché PIXELS_PER_THREAD è fissato a 4)
-    uint32_t packed_gray =
-        (static_cast<uint32_t>(gray[0])      ) |
-        (static_cast<uint32_t>(gray[1]) <<  8) |
-        (static_cast<uint32_t>(gray[2]) << 16) |
-        (static_cast<uint32_t>(gray[3]) << 24);
-
-    // Scrittura vettoriale: 4 valori di luminanza (4 byte) in un colpo solo
-    reinterpret_cast<uint32_t*>(output)[vector_index] = packed_gray;
-}
-
-
+} // End rgb_to_grayscale_parallel()
 
 
 
 // ---------- GAUSSIAN BLUR ----------
-__constant__ float d_kernel[KERNEL_SIZE * KERNEL_SIZE];
-float h_kernel[KERNEL_SIZE * KERNEL_SIZE];
+__constant__ float d_kernel_1d[KERNEL_SIZE];
 
-// Genera il kernel gaussiano normalizzato a runtime
 void generate_gaussian_kernel() {
-    double sum = 0.0;
-    
-    for (int y = -HALF; y <= HALF; y++) {
-        for (int x = -HALF; x <= HALF; x++) {
-            double value = exp(-(x*x + y*y) / (2.0 * SIGMA * SIGMA));
-            h_kernel[(y + HALF) * KERNEL_SIZE + (x + HALF)] = value;
-            sum += value;
-        }
+    float h_kernel_1d[KERNEL_SIZE];
+
+    float sum = 0.0;
+    for (int i = -HALF; i <= HALF; i++) {
+        float v = exp(-(i*i) / (2.0 * SIGMA * SIGMA));
+        h_kernel_1d[i + HALF] = v;
+        sum += v;
     }
-    
-    // Normalizza
-    for (int i = 0; i < KERNEL_SIZE * KERNEL_SIZE; i++) {
-        h_kernel[i] /= sum;
-    }
-}
+
+    for (int i = 0; i < KERNEL_SIZE; i++)
+        h_kernel_1d[i] /= sum;
+
+    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
+} // End generate_gaussian_kernel()
 
 
-
-void init_gaussian_kernel() {
-    static bool done = false;
-    if (done) return;
-
-    generate_gaussian_kernel();
-    cudaMemcpyToSymbol(d_kernel, h_kernel, KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
-    done = true;
-}
-
-
-
-__global__ void gaussian_blur_parallel(uint8_t *input, uint8_t *output, int width, int height) {
+__global__ void gaussian_horizontal(unsigned char *input, unsigned char *output, int width, int height){
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     if (x >= width || y >= height) return;
 
-    // For our grayscale buffers, one byte per pixel and 'width' pixels per row
-    int pitch = width;
-    double sum = 0;
+    __shared__ unsigned char tile[BLOCK_Y][BLOCK_X + 2 * HALF];
+    // Coordinates in the tile
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    for (int ky = -HALF; ky <= HALF; ky++) {
-        for (int kx = -HALF; kx <= HALF; kx++) {
-            int px = min(max(x + kx, 0), width - 1);
-            int py = min(max(y + ky, 0), height - 1);
+    // Base global coordinates of the block 
+    int base_x = blockIdx.x * blockDim.x;
+    
+    // Loading of the center
+    int gx = min(max(base_x + tx, 0), width - 1);
+    tile[ty][tx + HALF] = input[y * width + gx];
 
-            int pixel_index = py * pitch + px;
-
-            double weight = d_kernel[(ky + HALF) * KERNEL_SIZE + (kx + HALF)];
-            sum += input[pixel_index] * weight;
-        }
+    // Loading of the halo
+    if (tx < HALF) {
+        int gx_left = min(max(base_x + tx - HALF, 0), width - 1);
+        int gx_right = min(max(base_x + tx + blockDim.x, 0), width - 1);
+        
+        tile[ty][tx] = input[y * width + gx_left];
+        tile[ty][tx + HALF + blockDim.x] = input[y * width + gx_right];
     }
 
-    int out_index = y * pitch + x;
-    output[out_index] = (uint8_t) sum;
+    __syncthreads();
+
+    float sum = 0.0f;
+
+    #pragma unroll
+    for (int i = 0; i < KERNEL_SIZE; i++) {
+        unsigned char pixel = tile[ty][tx + i];
+        float w = d_kernel_1d[i];
+
+        sum += pixel * w;
+    }
+    
+    output[y*width+x] = (unsigned char) sum;
 }
 
 
+__global__ void gaussian_vertical(unsigned char *input, unsigned char *output, int width, int height){
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) return;
+
+    __shared__ unsigned char tile[BLOCK_Y + 2 * HALF][BLOCK_X];
+    // Coordinats in the tile
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    int base_y = blockIdx.y * blockDim.y;
+
+    // Loading of the center
+    int gy = min(max(base_y + ty, 0), height - 1);
+    tile[ty + HALF][tx] = input[gy * width + x];
+
+    // Halo
+    if (ty < HALF) {
+        int gy_top = min(max(base_y + ty - HALF, 0), height - 1);
+        int gy_bottom = min(max(base_y + ty + blockDim.y, 0), height - 1);
+        tile[ty][tx] = input[gy_top * width + x];
+        tile[ty + HALF + blockDim.y][tx] = input[gy_bottom * width + x];
+    }
+
+    __syncthreads();
+
+    float sum = 0.0f;
+
+    #pragma unroll
+    for (int i = 0; i < KERNEL_SIZE; i++) {
+        unsigned char pixel = tile[ty + i][tx];
+        float w = d_kernel_1d[i];
+
+        sum += pixel * w;
+    }
+    
+    output[y*width+x] = (unsigned char) sum;
+}
 
 
 
 // ---------- SOBEL EDGE DETECTION ----------
 // Sobel operator on 8-bit grayscale images (1 byte per pixel)
-__global__ void sobel_edge_detection_parallel(uint8_t *input,
-                                              uint8_t *output,
-                                              int width,
-                                              int height,
-                                              int rows_per_stream,
-                                              int start_row) {
-    // shared memory tile (+2 to consider halo: borders of the image)
-    __shared__ uint8_t tile[BLOCK_Y + 2][BLOCK_X + 2];
-
-    // Coordinates of the pixel in the current slice
+__global__ void sobel_edge_detection_parallel(unsigned char *input,
+                                              unsigned char *output,
+                                              int slice_width,
+                                              int slice_height) {
+    // Global coordinates
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= width || y >= rows_per_stream) return;
+    if (x > slice_width || y > slice_height) return;
 
-    // Global coordinates in the image
-    int global_y = start_row + y;
+    // Shared memory 2D (+ 2 for the halo)
+    __shared__ unsigned char tile[BLOCK_Y + 2][BLOCK_X + 2];
 
+    // Coordinates in the tile
     int tx = threadIdx.x + 1;
     int ty = threadIdx.y + 1;
 
     // Center
-    if (x < width && y < rows_per_stream)
-        tile[ty][tx] = input[y * width + x];
-    else
-        tile[ty][tx] = 0;
+    int cx = max(0, min(slice_width - 1, x));
+    int cy = max(0, min(slice_height - 1, y));
+    tile[ty][tx] = input[cy * slice_width + cx];
 
-    // Left halo
-    if (threadIdx.x == 0 && x > 0)
-        tile[ty][0] = input[y * width + (x - 1)];
+    // Left
+    if (tx == 1) {
+        int hx = max(0, min(slice_width - 1, x - 1));
+        int hy = max(0, min(slice_height - 1, y));
+        tile[ty][0] = input[hy * slice_width + hx];
+    }
 
-    // Right halo
-    if (threadIdx.x == blockDim.x - 1 && x < width - 1)
-        tile[ty][blockDim.x + 1] = input[y * width + (x + 1)];
+    // Right
+    if (tx == blockDim.x) {
+        int hx = max(0, min(slice_width - 1, x + 1));
+        int hy = max(0, min(slice_height - 1, y));
+        tile[ty][BLOCK_X + 1] = input[hy * slice_width + hx];
+    }
 
-    // Upper halo
-    if (threadIdx.y == 0 && global_y > 0)
-        tile[0][tx] = input[(y - 1) * width + x];
+    // Top
+    if (ty == 1) {
+        int hx = max(0, min(slice_width - 1, x));
+        int hy = max(0, min(slice_height - 1, y - 1));
+        tile[0][tx] = input[hy * slice_width + hx];
+    }
 
-    // Bottom halo
-    if (threadIdx.y == blockDim.y - 1 && global_y < height - 1)
-        tile[blockDim.y + 1][tx] = input[(y + 1) * width + x];
+    // Bottom
+    if (ty == blockDim.y) {
+        int hx = max(0, min(slice_width - 1, x));
+        int hy = max(0, min(slice_height - 1, y + 1));
+        tile[BLOCK_Y + 1][tx] = input[hy * slice_width + hx];
+    }
 
-    // Halo corners
-    if (threadIdx.x == 0 && threadIdx.y == 0 && x > 0 && global_y > 0)
-        tile[0][0] = input[(y - 1) * width + (x - 1)];
+    // Upper-Left corner
+    if (tx == 1 && ty == 1) {
+        int hx = max(0, min(slice_width - 1, x - 1));
+        int hy = max(0, min(slice_height - 1, y - 1));
+        tile[0][0] = input[hy * slice_width + hx];
+    }
 
-    if (threadIdx.x == blockDim.x - 1 && threadIdx.y == 0 && x < width - 1 && global_y > 0)
-        tile[0][blockDim.x + 1] = input[(y - 1) * width + (x + 1)];
+    // Upper-Right corner
+    if (tx == blockDim.x && ty == 1) {
+        int hx = max(0, min(slice_width - 1, x + 1));
+        int hy = max(0, min(slice_height - 1, y - 1));
+        tile[0][BLOCK_X + 1] = input[hy * slice_width + hx];
+    }
 
-    if (threadIdx.x == 0 && threadIdx.y == blockDim.y - 1 && x > 0 && global_y < height - 1)
-        tile[blockDim.y + 1][0] = input[(y + 1) * width + (x - 1)];
+    // Bottom-Left corner
+    if (tx == 1 && ty == blockDim.y) {
+        int hx = max(0, min(slice_width - 1, x - 1));
+        int hy = max(0, min(slice_height - 1, y + 1));
+        tile[BLOCK_Y + 1][0] = input[hy * slice_width + hx];
+    }
 
-    if (threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1 && x < width - 1 && global_y < height - 1)
-        tile[blockDim.y + 1][blockDim.x + 1] = input[(y + 1) * width + (x + 1)];
+    // Bottom-Right corner
+    if (tx == blockDim.x && ty == blockDim.y) {
+        int hx = max(0, min(slice_width - 1, x + 1));
+        int hy = max(0, min(slice_height - 1, y + 1));
+        tile[BLOCK_Y + 1][BLOCK_X + 1] = input[hy * slice_width + hx];
+    }
 
     __syncthreads();
 
-    // Sobel: plug values of the Sobel matrices directly
-    int gx =
-        -tile[ty-1][tx-1] + tile[ty-1][tx+1] +
-        -2*tile[ty][tx-1] + 2*tile[ty][tx+1] +
-        -tile[ty+1][tx-1] + tile[ty+1][tx+1];
+    // Sobel
+    int gx =  -tile[ty - 1][tx - 1] + tile[ty - 1][tx + 1]
+            -2*tile[ty][tx - 1] + 2 * tile[ty][tx + 1]
+              -tile[ty + 1][tx - 1] + tile[ty + 1][tx + 1];
 
-    int gy =
-        -tile[ty-1][tx-1] -2*tile[ty-1][tx] -tile[ty-1][tx+1] +
-         tile[ty+1][tx-1] +2*tile[ty+1][tx] +tile[ty+1][tx+1];
+    int gy = - tile[ty - 1][tx - 1] - 2 * tile[ty - 1][tx] - tile[ty - 1][tx + 1]
+             + tile[ty + 1][tx - 1] + 2 * tile[ty + 1][tx] + tile[ty + 1][tx + 1];
 
-    int magnitude = abs(gx) + abs(gy);
-    magnitude = min(max(magnitude, 0), 255);
-    output[y * width + x] = (uint8_t) magnitude;
-}
+    int magnitude = min(abs(gx) + abs(gy), 255);
 
-
+    output[y * slice_width + x] = (unsigned char) magnitude;
+} // End sobel_edge_detection_parallel()
 
 
 
 int main() {
     init_SDL();
 
-    SDL_Surface *image = load_img("images/img.jpg");
-    
-    int rgb_size = WIDTH * HEIGHT * sizeof(uchar4); // Size of RGB images (4 bytes per pixel, one for each channel)
-    int grayscale_size = WIDTH * HEIGHT * sizeof(uint8_t); // Size of grayscale images (1 byte per pixel, only one channel)
+    SDL_Surface *image = load_img(IMG_PATH);
+    SDL_LockSurface(image); // Lock to access pixels
+    const int width = image->w;
+    const int height = image->h;
+    int rgb_size = width * height * sizeof(uchar4); // Size of RGB image (4 bytes per pixel)
+    int grayscale_size = width * height * sizeof(unsigned char); // Size of grayscale images (1 byte per pixel)
 
-
-    // ---------- RGB TO GRAYSCALE ----------
-    SDL_LockSurface(image);
-    HANDLE_ERROR(cudaHostRegister(image->pixels, rgb_size, cudaHostRegisterPortable)); // Register existing buffer as page-locked (pinned) memory
-    uint8_t *grayscale;
-    cudaMallocHost(&grayscale, grayscale_size);
-
-    // Allocate GPU memory
-    uchar4 *d_pixels_in;
-    uint8_t *d_pixels_out;
-    HANDLE_ERROR(cudaMalloc(&d_pixels_in, rgb_size));
-    HANDLE_ERROR(cudaMalloc(&d_pixels_out, grayscale_size));
-
-    // CUDA streams
-    const int rows_per_stream = HEIGHT / N_STREAMS;
-    size_t slice_in_size = rows_per_stream * WIDTH * sizeof(uchar4);
-    size_t slice_out_size = rows_per_stream * WIDTH * sizeof(uint8_t);
-    cudaStream_t streams[N_STREAMS];
-    
-    for(int i = 0; i < N_STREAMS; i++) {
-        cudaStreamCreate(&streams[i]);
-
-        int start_row = i * rows_per_stream;
-        uchar4 *slice_in = d_pixels_in + start_row * WIDTH;
-        uint8_t *slice_out = d_pixels_out + start_row * WIDTH;
-
-        cudaMemcpyAsync(slice_in, (uchar4*) image->pixels + start_row * WIDTH, slice_in_size, cudaMemcpyHostToDevice, streams[i]);
-
-        dim3 block_grayscale(BLOCK_X, BLOCK_Y);
-        // Works for every image resolution
-        dim3 grid_grayscale((WIDTH + BLOCK_X*PIXELS_PER_THREAD - 1) / (BLOCK_X * PIXELS_PER_THREAD), // 240
-                            (rows_per_stream + BLOCK_Y - 1) / BLOCK_Y); // 135
-
-        rgb_to_grayscale_parallel<<<grid_grayscale, block_grayscale, 0, streams[i]>>>(slice_in, slice_out, rows_per_stream); // Run the kernel
-        checkCUDAError((char*) cudaGetLastError());
-
-        cudaMemcpyAsync(grayscale + start_row * WIDTH, slice_out, slice_out_size, cudaMemcpyDeviceToHost, streams[i]);
-    }
-
-    // Wait for all streams
-    for (int i = 0; i < N_STREAMS; i++)
-        cudaStreamSynchronize(streams[i]);
-
-
-    cudaHostUnregister(image->pixels);
-    SDL_UnlockSurface(image);
-    SDL_FreeSurface(image);
-
-
-    // ---------- GAUSSIAN BLUR ----------
-    // Create CUDA environment
-    dim3 block_gaussian_blur(32, 32); // 32x32 = 1024 threads per block (max for 4080 SUPER)
-    // Scales for every image resolution
-    dim3 grid_gaussian_blur((WIDTH + block_gaussian_blur.x - 1) / block_gaussian_blur.x, // 240 in this case
-                            (HEIGHT+ block_gaussian_blur.y - 1) / block_gaussian_blur.y); // 135 in this case
-
-    SDL_Surface* blurred = SDL_CreateRGBSurface(0, WIDTH, HEIGHT, 8, // 8 bit per pixel (grayscale)
-                                                0, 0, 0, 0); // Mask not needed for 8 bit surfaces
-    if (!blurred) {
-        fprintf(stderr, "Errore creazione superficie destinazione\n");
-        return 1;
-    }
-
-    SDL_LockSurface(blurred);
-
-    uint8_t *d_input, *d_output;
-
-    HANDLE_ERROR(cudaMalloc(&d_input, grayscale_size));
-    HANDLE_ERROR(cudaMalloc(&d_output, grayscale_size));
-
-    HANDLE_ERROR(cudaMemcpy(d_input, grayscale, grayscale_size, cudaMemcpyHostToDevice));
-    
-    // Genera e copia il kernel nella memoria costante della GPU
-    init_gaussian_kernel();
-    
-    gaussian_blur_parallel<<<grid_gaussian_blur, block_gaussian_blur>>>(d_input, d_output, WIDTH, HEIGHT);
-    cudaDeviceSynchronize();
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
-
-    HANDLE_ERROR(cudaMemcpy(blurred->pixels, d_output, grayscale_size, cudaMemcpyDeviceToHost));
-    HANDLE_ERROR(cudaFree(d_input));
-    HANDLE_ERROR(cudaFree(d_output));
-
-
+    // -------------------------------------------------- CUDA --------------------------------------------------
     // Profiling
     cudaEvent_t start, stop;
     float time;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-
-
-    // ---------- SOBEL EDGE DETECTION ----------
-    // Allocate GPU memory
-    uint8_t *d_input_sobel, *d_output_sobel;
-    HANDLE_ERROR(cudaMalloc(&d_input_sobel, grayscale_size));
-    HANDLE_ERROR(cudaMalloc(&d_output_sobel, grayscale_size));
-    
-    // Host output buffer (pinned memory)
-    uint8_t *h_output_sobel;
-    HANDLE_ERROR(cudaMallocHost(&h_output_sobel, grayscale_size));
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
 
     // Register existing buffer as page-locked (pinned) memory
-    cudaHostRegister(blurred->pixels, grayscale_size, cudaHostRegisterPortable);
+    CUDA_CHECK(cudaHostRegister(image->pixels, rgb_size, cudaHostRegisterPortable));
+    // Host output buffer (pinned memory)
+    unsigned char *h_output;
+    CUDA_CHECK(cudaMallocHost(&h_output, grayscale_size));
 
-    // CUDA streams
-    // Use the same stream subdivision of the image as RGB-to-grayscale alorithm
-    size_t slice_size = rows_per_stream * WIDTH * sizeof(uint8_t);
-    cudaStream_t streams_sobel[N_STREAMS];
-    
-    for(int i = 0; i < N_STREAMS; i++) {
-        cudaStreamCreate(&streams_sobel[i]);
+    // Allocate GPU memory
+    uchar4 *d_input; // Original RGB pixels
+    unsigned char *d_work, *d_temp_gaussian; // Working array in all the pipeline
+    CUDA_CHECK(cudaMalloc(&d_input, rgb_size));
+    CUDA_CHECK(cudaMalloc(&d_work, grayscale_size));
+    CUDA_CHECK(cudaMalloc(&d_temp_gaussian, grayscale_size));
 
-        int start_row = i * rows_per_stream;
-        uint8_t *slice_in = d_input_sobel + start_row * WIDTH;
-        uint8_t *slice_out = d_output_sobel + start_row * WIDTH;
-
-        HANDLE_ERROR(cudaMemcpyAsync(slice_in, ((uint8_t*) blurred->pixels) + start_row * WIDTH, slice_size, cudaMemcpyHostToDevice, streams_sobel[i]));
-
-        dim3 block_sobel(BLOCK_X, BLOCK_Y);
-        // Works for every image resolution
-        dim3 grid_sobel((WIDTH + block_sobel.x - 1) / block_sobel.x, // 240
-                        (rows_per_stream + block_sobel.y - 1) / block_sobel.y); // 135
-
-        // Run the kernel
-        sobel_edge_detection_parallel<<<grid_sobel, block_sobel, 0, streams_sobel[i]>>>(slice_in,
-                                                                                        slice_out,
-                                                                                        WIDTH,
-                                                                                        HEIGHT,
-                                                                                        rows_per_stream,
-                                                                                        start_row);
-        checkCUDAError((char*) cudaGetLastError());
-
-        HANDLE_ERROR(cudaMemcpyAsync(h_output_sobel + start_row * WIDTH, //Destination
-                                     slice_out, // Source
-                                     rows_per_stream * WIDTH * sizeof(uint8_t), // Size
-                                     cudaMemcpyDeviceToHost, // Copy direction
-                                     streams_sobel[i] // Stream
-                                    ));
-    }
-
-    // Wait for all streams
+    // Create CUDA streams
+    cudaStream_t streams[N_STREAMS];
     for (int i = 0; i < N_STREAMS; i++)
-        cudaStreamSynchronize(streams_sobel[i]);
+        CUDA_CHECK(cudaStreamCreate(&streams[i]));
 
-    // Clean up
-    SDL_UnlockSurface(blurred);
-    SDL_FreeSurface(blurred);
-    cudaFree(d_input_sobel);
-    cudaFree(d_output_sobel);
+    // Number of rows in a slice, each handled by a stream
+    const int slice_height = height / NUM_SLICES;    
+
+    generate_gaussian_kernel();
+
+    // Block for Gaussian Blur and Sobel
+    dim3 block(BLOCK_X, BLOCK_Y);
+
+    // Stream cycle
+    for (int i = 0; i < NUM_SLICES; i++) {
+        int s = i % N_STREAMS;
+
+        int start_row = i * slice_height; // First row of the current slice
+        int end_row   = start_row + slice_height; // Last row (excluded)
+
+        // Halo
+        int copy_start = max(0, start_row - HALO_ROWS); // Extend up
+        int copy_end   = min(height, end_row + HALO_ROWS); // Extend down
+        int extended_rows = copy_end - copy_start; // Total rows to copy and process
+
+        // Memory size
+        size_t in_size  = extended_rows * width * sizeof(uchar4);
+        size_t out_size = slice_height * width * sizeof(unsigned char);
+
+        // Device pointers
+        uchar4 *slice_input  = d_input  + copy_start * width;
+        unsigned char *slice_work = d_work + copy_start * width;
+        unsigned char *slice_tmp  = d_temp_gaussian + copy_start * width;
+
+        dim3 grid_local(
+            (width + BLOCK_X - 1) / BLOCK_X,
+            (extended_rows + BLOCK_Y - 1) / BLOCK_Y
+        );
+
+        // HtoD
+        CUDA_CHECK(cudaMemcpyAsync(
+            slice_input,
+            (uchar4*)image->pixels + copy_start * width,
+            in_size,
+            cudaMemcpyHostToDevice,
+            streams[s]
+        ));
+
+        // ---------------- RGB → GRAY ----------------
+        int total_pixels = width * extended_rows;
+        dim3 grid_gray((total_pixels / PIXELS_PER_THREAD + 255) / 256);
+
+        rgb_to_grayscale_parallel<<<grid_gray, block, 0, streams[s]>>>(
+            slice_input,
+            slice_work,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        // ---------------- GAUSSIAN BLUR ----------------
+        gaussian_horizontal<<<grid_local, block, 0, streams[s]>>>(
+            slice_work,
+            slice_tmp,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        gaussian_vertical<<<grid_local, block, 0, streams[s]>>>(
+            slice_tmp,
+            slice_work,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        // ---------------- SOBEL ----------------
+        sobel_edge_detection_parallel<<<grid_local, block, 0, streams[s]>>>(
+            slice_work,
+            slice_tmp,
+            width,
+            extended_rows
+        );
+        CUDA_CHECK(cudaGetLastError());
+
+        // ---------------- DtoH (solo parte valida) ----------------
+        CUDA_CHECK(cudaMemcpyAsync(
+            h_output + start_row * width,
+            slice_tmp + HALO_ROWS * width,
+            out_size,
+            cudaMemcpyDeviceToHost,
+            streams[s]
+        ));
+    }
     
+    // Wait for all streams to finish
+    CUDA_CHECK(cudaDeviceSynchronize());
+
     // Profiling
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-    printf("Kernel time: %.3f ms\n", time);
-    HANDLE_ERROR(cudaEventDestroy(start));
-    HANDLE_ERROR(cudaEventDestroy(stop));
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 
-    // Create an 8-bit indexed surface directly from the Sobel output
-    SDL_Surface *final8 = SDL_CreateRGBSurfaceWithFormatFrom(
-        (uint8_t*) h_output_sobel,
-        WIDTH,
-        HEIGHT,
-        8,                          // Bits per pixel
-        WIDTH * sizeof(uint8_t),    // Pitch (bytes per row)
-        SDL_PIXELFORMAT_INDEX8
-    );
+    // -------------------------------------------------- END CUDA --------------------------------------------------
 
-    // Linear grayscale palette: 0 = black, 255 = white
-    SDL_Color palette[256];
-    for (int i = 0; i < 256; i++) {
-        palette[i].r = i;
-        palette[i].g = i;
-        palette[i].b = i;
-        palette[i].a = 255;
-    }
-    SDL_SetPaletteColors(final8->format->palette, palette, 0, 256);
+    show_image(h_output, width, height, "Sobel Edge Detection - Versione parallela ottimizzata");
 
-    // Convert to a 32-bit RGBA surface for easy blitting to the window surface
-    SDL_Surface *final = SDL_ConvertSurfaceFormat(final8, SDL_PIXELFORMAT_RGBA32, 0);
-    
-    SDL_Window *window = create_window("RGB to grayscale");
-    if (!window) {
-        fprintf(stderr, "Errore nella creazione della finestra: %s\n", SDL_GetError());
-        SDL_FreeSurface(blurred);
-        SDL_FreeSurface(final);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    // Get the surface window (where we will paint the image)
-    SDL_Surface *screen = SDL_GetWindowSurface(window);
-    if (!screen) {
-        printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
-        SDL_FreeSurface(final);
-        SDL_DestroyWindow(window);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    // Copy the image in the window surface (correctly scaling the dimensions)
-    SDL_BlitScaled(final, NULL, screen, NULL);
-    SDL_UpdateWindowSurface(window);
-
-    SDL_Delay(SHOW_IMAGE_FOR); // Show the image for 3 seconds
-
-    // Free everything
-    SDL_FreeSurface(final);
-    SDL_DestroyWindow(window);
-    cudaFreeHost(h_output_sobel);
+    // ----- Clean up -----
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_work));
+    CUDA_CHECK(cudaFree(d_temp_gaussian));
+    //CUDA_CHECK(cudaFree(d_output_sobel));
+    CUDA_CHECK(cudaFreeHost(h_output));
+    CUDA_CHECK(cudaHostUnregister(image->pixels));
+    SDL_FreeSurface(image);
     IMG_Quit();
     SDL_Quit();
 
     return 0;
-}
+} // End main()

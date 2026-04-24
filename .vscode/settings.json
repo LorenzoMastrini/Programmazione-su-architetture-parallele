@@ -1,7 +1,11 @@
 {
     "makefile.configureOnOpen": true,
     "files.associations": {
-        "random": "cpp",
-        "ios": "cpp"
+        "format": "cpp",
+        "array": "cpp",
+        "string_view": "cpp",
+        "initializer_list": "cpp",
+        "span": "cpp",
+        "utility": "cpp"
     }
 }

@@ -74,3 +74,101 @@ SDL_Window* create_window(const char* title) {
 
     return window;
 }
+
+
+
+// Grayscale version
+void show_image(const unsigned char* grayscale_image, int width, int height, const char* title) {
+    SDL_Surface *final8 = SDL_CreateRGBSurfaceWithFormatFrom(
+        (void*)grayscale_image,
+        width,
+        height,
+        8,
+        width * (int)sizeof(unsigned char),
+        SDL_PIXELFORMAT_INDEX8
+    );
+    if (!final8) {
+        fprintf(stderr, "Errore SDL_CreateRGBSurfaceWithFormatFrom (INDEX8): %s\n", SDL_GetError());
+        return;
+    }
+
+    if (final8->format && final8->format->palette) {
+        SDL_Color palette[256];
+        for (int i = 0; i < 256; i++) {
+            palette[i].r = i;
+            palette[i].g = i;
+            palette[i].b = i;
+            palette[i].a = 255;
+        }
+        SDL_SetPaletteColors(final8->format->palette, palette, 0, 256);
+    }
+
+    SDL_Surface *final = SDL_ConvertSurfaceFormat(final8, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(final8);
+    if (!final) {
+        fprintf(stderr, "Errore SDL_ConvertSurfaceFormat (to RGBA32): %s\n", SDL_GetError());
+        return;
+    }
+
+    SDL_Window *window = create_window(title);
+    if (!window) {
+        fprintf(stderr, "Errore nella creazione della finestra: %s\n", SDL_GetError());
+        SDL_FreeSurface(final);
+        return;
+    }
+
+    SDL_Surface *screen = SDL_GetWindowSurface(window);
+    if (!screen) {
+        printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
+        SDL_FreeSurface(final);
+        SDL_DestroyWindow(window);
+        return;
+    }
+
+    SDL_BlitScaled(final, NULL, screen, NULL);
+    SDL_UpdateWindowSurface(window);
+    SDL_Delay(SHOW_IMAGE_FOR);
+
+    SDL_FreeSurface(final);
+    SDL_DestroyWindow(window);
+}
+
+
+
+// RGB(A) version
+void show_image(const uchar4* rgba_image, int width, int height, const char* title) {
+    SDL_Surface *final = SDL_CreateRGBSurfaceWithFormatFrom(
+        (void*)rgba_image,
+        width,
+        height,
+        32,
+        width * (int)sizeof(uchar4),
+        SDL_PIXELFORMAT_RGBA32
+    );
+    if (!final) {
+        fprintf(stderr, "Errore SDL_CreateRGBSurfaceWithFormatFrom (RGBA32): %s\n", SDL_GetError());
+        return;
+    }
+
+    SDL_Window *window = create_window(title);
+    if (!window) {
+        fprintf(stderr, "Errore nella creazione della finestra: %s\n", SDL_GetError());
+        SDL_FreeSurface(final);
+        return;
+    }
+
+    SDL_Surface *screen = SDL_GetWindowSurface(window);
+    if (!screen) {
+        printf("Errore SDL_GetWindowSurface: %s\n", SDL_GetError());
+        SDL_FreeSurface(final);
+        SDL_DestroyWindow(window);
+        return;
+    }
+
+    SDL_BlitScaled(final, NULL, screen, NULL);
+    SDL_UpdateWindowSurface(window);
+    SDL_Delay(SHOW_IMAGE_FOR);
+
+    SDL_FreeSurface(final);
+    SDL_DestroyWindow(window);
+}

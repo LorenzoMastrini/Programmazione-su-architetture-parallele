@@ -158,7 +158,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     int width = src->w;
     int height = src->h;
-
+    
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
     uchar4 *d_input, *d_temp;
@@ -279,4 +279,3 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
-

@@ -197,8 +197,8 @@ int main(int argc, char* argv[]) {
         SDL_Quit();
         return 1;
     }
-
-    SDL_Surface* image = load_img("images/img.jpg");
+    
+    SDL_Surface* image = load_img(IMG_PATH);
     
     SDL_Surface* blurred = gaussian_blur(image);
 
