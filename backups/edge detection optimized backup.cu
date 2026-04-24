@@ -13,8 +13,6 @@
 #define KERNEL_SIZE 21
 #define HALF 10
 #define SIGMA 5.0
-#define STREAM_POOL_SIZE 4
-#define N_CHUNKS 16
 
 
 
