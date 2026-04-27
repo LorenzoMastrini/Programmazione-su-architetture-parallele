@@ -1,4 +1,3 @@
-#include <math.h>
 #include "../utils.h"
 
 // Block dimensions fine-tuned to optimize occupancy

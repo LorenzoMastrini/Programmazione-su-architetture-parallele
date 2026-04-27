@@ -1,4 +1,3 @@
-#include <math.h>
 #include "../utils.h"
 
 // We work with 8K images (7680x4320 pixels)

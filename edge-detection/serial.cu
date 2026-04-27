@@ -1,4 +1,3 @@
-#include <math.h>
 #include "../utils.h"
 
 #define KERNEL_SIZE 21
