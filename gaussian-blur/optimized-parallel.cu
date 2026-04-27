@@ -28,7 +28,7 @@ void init_gaussian_kernel_once() {
     if (initialized) return;
 
     generate_gaussian_kernel();
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
 
     initialized = true;
 }
@@ -40,22 +40,24 @@ __global__ void gaussian_horizontal(uchar4 __restrict__ *input, uchar4 __restric
     if (x >= width || y >= height) return;
 
     __shared__ uchar4 tile[BLOCK_SIZE][BLOCK_SIZE + 2 * HALF];
+    // Coordinates in the tile
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
+    // Base global coordinates of the block 
     int base_x = blockIdx.x * blockDim.x;
-    int center_x = base_x + tx;
-    int left_x = base_x + tx - HALF;
-    int right_x = base_x + tx + blockDim.x;
-    int clamped_center_x = min(max(center_x, 0), width - 1);
+    
+    // Loading of the center
+    int gx = min(max(base_x + tx, 0), width - 1);
+    tile[ty][tx + HALF] = input[y * width + gx];
 
-    tile[ty][tx + HALF] = input[y * width + clamped_center_x];
-
+    // Loading of the halo
     if (tx < HALF) {
-        int clamped_left_x = min(max(left_x, 0), width - 1);
-        int clamped_right_x = min(max(right_x, 0), width - 1);
-        tile[ty][tx] = input[y * width + clamped_left_x];
-        tile[ty][tx + HALF + blockDim.x] = input[y * width + clamped_right_x];
+        int gx_left = min(max(base_x + tx - HALF, 0), width - 1);
+        int gx_right = min(max(base_x + tx + blockDim.x, 0), width - 1);
+        
+        tile[ty][tx] = input[y * width + gx_left];
+        tile[ty][tx + HALF + blockDim.x] = input[y * width + gx_right];
     }
 
     __syncthreads();
@@ -88,22 +90,22 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
     if (x >= width || y >= height) return;
 
     __shared__ uchar4 tile[BLOCK_SIZE + 2 * HALF][BLOCK_SIZE];
+    // Coordinats in the tile
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
     int base_y = blockIdx.y * blockDim.y;
-    int center_y = base_y + ty;
-    int top_y = base_y + ty - HALF;
-    int bottom_y = base_y + ty + blockDim.y;
-    int clamped_center_y = min(max(center_y, 0), height - 1);
 
-    tile[ty + HALF][tx] = input[clamped_center_y * width + x];
+    // Loading of the center
+    int gy = min(max(base_y + ty, 0), height - 1);
+    tile[ty + HALF][tx] = input[gy * width + x];
 
+    // Halo
     if (ty < HALF) {
-        int clamped_top_y = min(max(top_y, 0), height - 1);
-        int clamped_bottom_y = min(max(bottom_y, 0), height - 1);
-        tile[ty][tx] = input[clamped_top_y * width + x];
-        tile[ty + HALF + blockDim.y][tx] = input[clamped_bottom_y * width + x];
+        int gy_top = min(max(base_y + ty - HALF, 0), height - 1);
+        int gy_bottom = min(max(base_y + ty + blockDim.y, 0), height - 1);
+        tile[ty][tx] = input[gy_top * width + x];
+        tile[ty + HALF + blockDim.y][tx] = input[gy_bottom * width + x];
     }
 
     __syncthreads();
@@ -130,26 +132,37 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
 }
 
 
-// Funzione di Gaussian blur per immagine RGB
-SDL_Surface* gaussian_blur(SDL_Surface* src) {
-    SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32, src->format->Rmask, src->format->Gmask, src->format->Bmask, src->format->Amask);
-    if (!dst) {
+
+int main(int argc, char* argv[]) {
+    init_SDL();
+    cudaFree(0);
+
+    SDL_Surface* image = load_img(IMG_PATH);
+    SDL_Surface* blurred = SDL_CreateRGBSurface(0, image->w, image->h, 32,
+                                                image->format->Rmask, image->format->Gmask,
+                                                image->format->Bmask, image->format->Amask);
+    if (!blurred) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
-        return NULL;
+        SDL_FreeSurface(image);
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
     }
 
-    SDL_LockSurface(src);
-    SDL_LockSurface(dst);
+    SDL_LockSurface(image);
+    SDL_LockSurface(blurred);
 
-    int width = src->w;
-    int height = src->h;
-    const int rows_per_chunk = (height + N_CHUNKS - 1) / N_CHUNKS;
-    const int max_halo_rows = min(height, rows_per_chunk + 2 * HALF);
-
+    int width = image->w;
+    int height = image->h;
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
+    const int rows_per_chunk = (height + N_CHUNKS - 1) / N_CHUNKS;
+    const int max_halo_rows = min(height, rows_per_chunk + 2 * HALF);
     const size_t stream_buffer_size = (size_t)max_halo_rows * width * sizeof(uchar4);
-    
+    cudaStream_t streams[STREAM_POOL_SIZE];
+    uchar4* d_stream_in[STREAM_POOL_SIZE];
+    uchar4* d_stream_tmp[STREAM_POOL_SIZE];
+
     init_gaussian_kernel_once();
 
     // -------------------------------------------------- CUDA --------------------------------------------------
@@ -160,62 +173,64 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
 
-    HANDLE_ERROR(cudaHostRegister(src->pixels, bytes, cudaHostRegisterPortable));
-    HANDLE_ERROR(cudaHostRegister(dst->pixels, bytes, cudaHostRegisterPortable));
+    CUDA_CHECK(cudaHostRegister(image->pixels, bytes, cudaHostRegisterPortable));
+    CUDA_CHECK(cudaHostRegister(blurred->pixels, bytes, cudaHostRegisterPortable));
 
-    cudaStream_t streams[STREAM_POOL_SIZE];
-    uchar4* d_stream_in[STREAM_POOL_SIZE];
-    uchar4* d_stream_tmp[STREAM_POOL_SIZE];
-
-    dim3 block(BLOCK_SIZE, BLOCK_SIZE);
-
-    // Crea un pool fisso di stream e relativi buffer privati.
+    // Create stream pool of fixed size
     for (int s = 0; s < STREAM_POOL_SIZE; s++) {
         cudaStreamCreate(&streams[s]);
-        HANDLE_ERROR(cudaMalloc(&d_stream_in[s], stream_buffer_size));
-        HANDLE_ERROR(cudaMalloc(&d_stream_tmp[s], stream_buffer_size));
+        CUDA_CHECK(cudaMalloc(&d_stream_in[s], stream_buffer_size));
+        CUDA_CHECK(cudaMalloc(&d_stream_tmp[s], stream_buffer_size));
     }
 
     for (int i = 0; i < N_CHUNKS; i++) {
         int stream_id = i % STREAM_POOL_SIZE;
         cudaStream_t stream = streams[stream_id];
 
-        HANDLE_ERROR(cudaStreamSynchronize(stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
 
         int start_row = i * rows_per_chunk;
         if (start_row >= height) continue;
 
         int end_row = min(start_row + rows_per_chunk, height);
-
         int halo_start = max(0, start_row - HALF);
-        int halo_end   = min(height, end_row + HALF);
-
-        int halo_rows  = halo_end - halo_start;
+        int halo_end = min(height, end_row + HALF);
+        int halo_rows = halo_end - halo_start;
         int valid_rows = end_row - start_row;
 
-        // Dimensione con halo
-        size_t halo_size  = (size_t)halo_rows * width * sizeof(uchar4);
+        size_t halo_size = (size_t)halo_rows * width * sizeof(uchar4);
         size_t valid_size = (size_t)valid_rows * width * sizeof(uchar4);
 
-        // Buffer device privati dello stream corrente
-        uchar4 *d_slice_in  = d_stream_in[stream_id];
+        uchar4 *d_slice_in = d_stream_in[stream_id];
         uchar4 *d_slice_tmp = d_stream_tmp[stream_id];
+        uchar4 *h_slice_in = reinterpret_cast<uchar4*>(image->pixels) + (size_t)halo_start * width;
+        uchar4 *h_slice_out = reinterpret_cast<uchar4*>(blurred->pixels) + (size_t)start_row * width;
 
-        uchar4 *h_slice_in  = reinterpret_cast<uchar4*>(src->pixels) + (size_t)halo_start * width;
-        uchar4 *h_slice_out = reinterpret_cast<uchar4*>(dst->pixels) + (size_t)start_row * width;
+        CUDA_CHECK(cudaMemcpyAsync(d_slice_in, h_slice_in, halo_size, cudaMemcpyHostToDevice, stream));
 
-        HANDLE_ERROR(cudaMemcpyAsync(d_slice_in, h_slice_in, halo_size, cudaMemcpyHostToDevice, stream));
-        
+        dim3 block(BLOCK_SIZE, BLOCK_SIZE);
         dim3 grid((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (halo_rows + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
         gaussian_horizontal<<<grid, block, 0, stream>>>(d_slice_in, d_slice_tmp, width, halo_rows);
+        CUDA_CHECK(cudaGetLastError());
         gaussian_vertical<<<grid, block, 0, stream>>>(d_slice_tmp, d_slice_in, width, halo_rows);
-
-        HANDLE_ERROR(cudaMemcpyAsync(h_slice_out, d_slice_in + (size_t)(start_row - halo_start) * width, valid_size, cudaMemcpyDeviceToHost, stream));
+        CUDA_CHECK(cudaGetLastError());
+        
+        CUDA_CHECK(cudaMemcpyAsync(
+            h_slice_out,
+            d_slice_in + (size_t)(start_row - halo_start) * width,
+            valid_size,
+            cudaMemcpyDeviceToHost,
+            stream
+        ));
     }
 
-    // Wait for all streams to finish
-    CUDA_CHECK(cudaDeviceSynchronize());
+    for (int s = 0; s < STREAM_POOL_SIZE; s++) {
+        CUDA_CHECK(cudaStreamSynchronize(streams[s]));
+        CUDA_CHECK(cudaFree(d_stream_in[s]));
+        CUDA_CHECK(cudaFree(d_stream_tmp[s]));
+        CUDA_CHECK(cudaStreamDestroy(streams[s]));
+    }
 
     // Profiling
     CUDA_CHECK(cudaEventRecord(stop, 0));
@@ -223,103 +238,19 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
     printf("Total CUDA time: %.2f ms\n", time);
     CUDA_CHECK(cudaEventDestroy(start));
-    CUDA_CHECK(cudaEventDestroy(stop));
-    
+    CUDA_CHECK(cudaEventDestroy(stop));  
     // -------------------------------------------------- END CUDA --------------------------------------------------
 
-    for(int s = 0; s < STREAM_POOL_SIZE; s++) {
-        HANDLE_ERROR(cudaFree(d_stream_in[s]));
-        HANDLE_ERROR(cudaFree(d_stream_tmp[s]));
-        HANDLE_ERROR(cudaStreamDestroy(streams[s]));
-    }
+    SDL_UnlockSurface(image);
+    SDL_UnlockSurface(blurred);
 
-    SDL_UnlockSurface(src);
-    SDL_UnlockSurface(dst);
-
-    return dst;
-}
-
-int main(int argc, char* argv[]) {
-    init_SDL();
-    cudaFree(0);
-    
-    SDL_DisplayMode dm;
-    if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
-        fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    SDL_Window *windowNormal = create_window("Immagine Originale");
-    SDL_Window *windowBlur = create_window("Immagine Sfocata");
-    
-    if (!windowNormal || !windowBlur) {
-        fprintf(stderr, "Impossibile creare le finestre: %s\n", SDL_GetError());
-        if (windowNormal) SDL_DestroyWindow(windowNormal);
-        if (windowBlur) SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    SDL_SetWindowPosition(windowNormal, 0, 0);
-    SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
-    
-    SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
-    if (!screenNormal) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Surface *screenBlur = SDL_GetWindowSurface(windowBlur);
-    if (!screenBlur) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Surface* image = load_img("images/img.jpg");
-    
-    SDL_Surface* blurred = gaussian_blur(image);
-
-    if (!blurred) {
-        fprintf(stderr, "Errore durante il Gaussian blur\n");
-        SDL_FreeSurface(image);
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-
-    }
-
-    SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
-
-    SDL_BlitScaled(image, NULL, screenNormal, NULL);
-    SDL_UpdateWindowSurface(windowNormal);
-    
-    SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
-    SDL_UpdateWindowSurface(windowBlur);
-    
-    SDL_Delay(4000);
-    
-    SDL_DestroyWindow(windowNormal);
-    SDL_DestroyWindow(windowBlur);
+    show_image(reinterpret_cast<const uchar4*>(image->pixels), width, height, "Immagine Originale");
+    show_image(reinterpret_cast<const uchar4*>(blurred->pixels), width, height, "Immagine Sfocata");
     
     SDL_FreeSurface(blurred);
     SDL_FreeSurface(image);
     IMG_Quit();
     SDL_Quit();
 
-
     return 0;
 }
-

@@ -7,3 +7,6 @@
 *.bmp
 .cursor
 .vscode
+*/serial
+*/naive-parallel
+*/optimized-parallel

@@ -70,7 +70,7 @@ void generate_gaussian_kernel() {
     for (int i = 0; i < KERNEL_SIZE; i++)
         h_kernel_1d[i] /= sum;
 
-    HANDLE_ERROR(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
+    CUDA_CHECK(cudaMemcpyToSymbol(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float)));
 } // End generate_gaussian_kernel()
 
 

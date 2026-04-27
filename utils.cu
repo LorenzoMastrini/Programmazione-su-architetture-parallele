@@ -2,15 +2,6 @@
 
 
 
-void HandleError(cudaError_t err, const char* file, int line) {
-    if (err != cudaSuccess) {
-        printf("%s in %s at line %d\n", cudaGetErrorString(err), file, line);
-        exit(EXIT_FAILURE);
-    }
-}
-
-
-
 void checkCUDAError(const char *msg) {
     cudaError_t err = cudaGetLastError();
     if (cudaSuccess != err) {
@@ -127,7 +118,22 @@ void show_image(const unsigned char* grayscale_image, int width, int height, con
 
     SDL_BlitScaled(final, NULL, screen, NULL);
     SDL_UpdateWindowSurface(window);
-    SDL_Delay(SHOW_IMAGE_FOR);
+
+    // Event loop: mantieni la finestra aperta finché l'utente non clicca un tasto
+    SDL_Event event;
+    int window_open = 1;
+    while (window_open) {
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                case SDL_KEYDOWN:
+                case SDL_MOUSEBUTTONDOWN:
+                    window_open = 0;
+                    break;
+            }
+        }
+        SDL_Delay(50);  // Evita consumo eccessivo di CPU
+    }
 
     SDL_FreeSurface(final);
     SDL_DestroyWindow(window);
@@ -167,7 +173,22 @@ void show_image(const uchar4* rgba_image, int width, int height, const char* tit
 
     SDL_BlitScaled(final, NULL, screen, NULL);
     SDL_UpdateWindowSurface(window);
-    SDL_Delay(SHOW_IMAGE_FOR);
+
+    // Event loop: keep the window open until the user press a key
+    SDL_Event event;
+    int window_open = 1;
+    while (window_open) {
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
+                case SDL_QUIT:
+                case SDL_KEYDOWN:
+                case SDL_MOUSEBUTTONDOWN:
+                    window_open = 0;
+                    break;
+            }
+        }
+        SDL_Delay(50);  // Evita consumo eccessivo di CPU
+    }
 
     SDL_FreeSurface(final);
     SDL_DestroyWindow(window);

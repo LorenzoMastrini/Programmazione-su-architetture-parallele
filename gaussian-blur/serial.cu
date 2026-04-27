@@ -55,14 +55,7 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 
     generate_gaussian_kernel();
 
-    // -------------------------------------------------- CUDA --------------------------------------------------
-    // Profiling
-    cudaEvent_t start, stop;
-    float time;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-    CUDA_CHECK(cudaEventRecord(start, 0));
-
+    // PASS 1: ORIZZONTALE
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
 
@@ -124,17 +117,6 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
         }
     }
 
-    // Profiling
-    CUDA_CHECK(cudaEventRecord(stop, 0));
-    CUDA_CHECK(cudaEventSynchronize(stop));
-    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
-    printf("Total CUDA time: %.2f ms\n", time);
-    CUDA_CHECK(cudaEventDestroy(start));
-    CUDA_CHECK(cudaEventDestroy(stop));
-    
-    // -------------------------------------------------- END CUDA --------------------------------------------------
-
-    
     SDL_UnlockSurface(src);
     SDL_UnlockSurface(tmp);
     SDL_UnlockSurface(dst);
@@ -147,77 +129,29 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
 int main(int argc, char* argv[]) {
     init_SDL();
 
-    // Ottieni le dimensioni dello schermo per posizionare le finestre
-    SDL_DisplayMode dm;
-    if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
-        fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    SDL_Window *windowNormal = create_window("Immagine Originale");
-    SDL_Window *windowBlur = create_window("Immagine Sfocata");
-    
-    if (!windowNormal || !windowBlur) {
-        fprintf(stderr, "Impossibile creare le finestre: %s\n", SDL_GetError());
-        if (windowNormal) SDL_DestroyWindow(windowNormal);
-        if (windowBlur) SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    
-    SDL_SetWindowPosition(windowNormal, 0, 0);
-    SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
-    
-    SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
-    if (!screenNormal) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Surface *screenBlur = SDL_GetWindowSurface(windowBlur);
-    if (!screenBlur) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
     SDL_Surface* image = load_img(IMG_PATH);
+    
     generate_gaussian_kernel();
 
+    // Profiling
+    cudaEvent_t start, stop;
+    float time;
+    CUDA_CHECK(cudaEventCreate(&start));
+    CUDA_CHECK(cudaEventCreate(&stop));
+    CUDA_CHECK(cudaEventRecord(start, 0));
+
     SDL_Surface* blurred = gaussian_blur(image);
-    if (!blurred) {
-        fprintf(stderr, "Errore durante il Gaussian blur\n");
-        SDL_FreeSurface(image);
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
 
-    SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
+    // Profiling
+    CUDA_CHECK(cudaEventRecord(stop, 0));
+    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
+    printf("Time: %.2f ms\n", time);
+    CUDA_CHECK(cudaEventDestroy(start));
+    CUDA_CHECK(cudaEventDestroy(stop));
 
-    SDL_BlitScaled(image, NULL, screenNormal, NULL);
-    SDL_UpdateWindowSurface(windowNormal);
-    
-    SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
-    SDL_UpdateWindowSurface(windowBlur);
-    
-    SDL_Delay(4000);
-    
-    SDL_DestroyWindow(windowNormal);
-    SDL_DestroyWindow(windowBlur);
+    show_image(reinterpret_cast<const uchar4*>(image->pixels), image->w, image->h, "Immagine Originale");
+    show_image(reinterpret_cast<const uchar4*>(blurred->pixels), blurred->w, blurred->h, "Immagine Sfocata");
     
     SDL_FreeSurface(blurred);
     SDL_FreeSurface(image);

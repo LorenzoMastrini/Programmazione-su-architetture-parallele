@@ -27,9 +27,9 @@ void init_gaussian_kernel() {
 
     generate_gaussian_kernel();
     if (d_kernel_1d == nullptr) {
-        HANDLE_ERROR(cudaMalloc(&d_kernel_1d, KERNEL_SIZE * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_kernel_1d, KERNEL_SIZE * sizeof(float)));
     }
-    HANDLE_ERROR(cudaMemcpy(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_kernel_1d, h_kernel_1d, KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     initialized = true;
 }
@@ -95,25 +95,27 @@ __global__ void gaussian_vertical(uchar4 __restrict__ *input, uchar4 __restrict_
 }
 
 
-// Funzione di Gaussian blur per immagine RGB
-SDL_Surface* gaussian_blur(SDL_Surface* src) {
-    SDL_Surface* dst = SDL_CreateRGBSurface(0, src->w, src->h, 32,
-                                            src->format->Rmask, src->format->Gmask,
-                                            src->format->Bmask, src->format->Amask);
-    if (!dst) {
+int main(int argc, char* argv[]) {
+    init_SDL();
+    cudaFree(0);
+
+    SDL_Surface* image = load_img(IMG_PATH);
+    SDL_Surface* blurred = SDL_CreateRGBSurface(0, image->w, image->h, 32,
+                                                image->format->Rmask, image->format->Gmask,
+                                                image->format->Bmask, image->format->Amask);
+    if (!blurred) {
         fprintf(stderr, "Errore creazione superficie destinazione\n");
-        return NULL;
+        SDL_FreeSurface(image);
+        IMG_Quit();
+        SDL_Quit();
+        return 1;
     }
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
 
-    SDL_LockSurface(src);
-    SDL_LockSurface(dst);
+    SDL_LockSurface(image);
+    SDL_LockSurface(blurred);
 
-    int width = src->w;
-    int height = src->h;
-
+    int width = image->w;
+    int height = image->h;
     size_t num_pixels = width * height;
     size_t bytes = num_pixels * sizeof(uchar4);
     uchar4 *d_input, *d_temp;
@@ -128,22 +130,19 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     CUDA_CHECK(cudaEventCreate(&stop));
     CUDA_CHECK(cudaEventRecord(start, 0));
 
-    // Alloca memoria GPU
-    HANDLE_ERROR(cudaMalloc(&d_input, bytes));
-    HANDLE_ERROR(cudaMalloc(&d_temp, bytes));
+    CUDA_CHECK(cudaMalloc(&d_input, bytes));
+    CUDA_CHECK(cudaMalloc(&d_temp, bytes));
 
-    dim3 block(BLOCK_SIZE, BLOCK_SIZE); // 256 thread per blocco
-    dim3 grid((width + BLOCK_SIZE -1)/BLOCK_SIZE, (height + BLOCK_SIZE -1)/BLOCK_SIZE);
+    CUDA_CHECK(cudaMemcpy(d_input, image->pixels, bytes, cudaMemcpyHostToDevice));
 
-    // HtoD
-    HANDLE_ERROR(cudaMemcpy(d_input, src->pixels, bytes, cudaMemcpyHostToDevice));
+    dim3 block(BLOCK_SIZE, BLOCK_SIZE);
+    dim3 grid((width + BLOCK_SIZE - 1) / BLOCK_SIZE, (height + BLOCK_SIZE - 1) / BLOCK_SIZE);
 
     gaussian_horizontal<<<grid, block>>>(d_input, d_temp, d_kernel_1d, width, height);
-    gaussian_vertical<<<grid, block>>>(d_temp, d_input, d_kernel_1d, width, height );
-    checkCUDAError("Errore nella chiamata al kernel 'gaussian_blur_kernel()'");
+    gaussian_vertical<<<grid, block>>>(d_temp, d_input, d_kernel_1d, width, height);
+    CUDA_CHECK(cudaGetLastError());
 
-    // DtoH
-    HANDLE_ERROR(cudaMemcpy(dst->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(blurred->pixels, d_input, bytes, cudaMemcpyDeviceToHost));
 
     // Profiling
     CUDA_CHECK(cudaEventRecord(stop, 0));
@@ -151,99 +150,23 @@ SDL_Surface* gaussian_blur(SDL_Surface* src) {
     CUDA_CHECK(cudaEventElapsedTime(&time, start, stop));
     printf("Total CUDA time: %.2f ms\n", time);
     CUDA_CHECK(cudaEventDestroy(start));
-    CUDA_CHECK(cudaEventDestroy(stop));
-    
+    CUDA_CHECK(cudaEventDestroy(stop));  
     // -------------------------------------------------- END CUDA --------------------------------------------------
 
-    HANDLE_ERROR(cudaFree(d_input));
-    HANDLE_ERROR(cudaFree(d_temp));
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_temp));
 
-    SDL_UnlockSurface(src);
-    SDL_UnlockSurface(dst);
+    SDL_UnlockSurface(image);
+    SDL_UnlockSurface(blurred);
 
-    return dst;
-}
+    show_image(reinterpret_cast<const uchar4*>(image->pixels), width, height, "Immagine Originale");
+    show_image(reinterpret_cast<const uchar4*>(blurred->pixels), width, height, "Immagine Sfocata");
 
-int main(int argc, char* argv[]) {
-    init_SDL();
-    cudaFree(0);
-    
-    SDL_DisplayMode dm;
-    if (SDL_GetDesktopDisplayMode(0, &dm) != 0) {
-        fprintf(stderr, "Errore SDL_GetDesktopDisplayMode: %s\n", SDL_GetError());
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    SDL_Window *windowNormal = create_window("Immagine Originale");
-    SDL_Window *windowBlur = create_window("Immagine Sfocata");
-    
-    if (!windowNormal || !windowBlur) {
-        fprintf(stderr, "Impossibile creare le finestre: %s\n", SDL_GetError());
-        if (windowNormal) SDL_DestroyWindow(windowNormal);
-        if (windowBlur) SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    
-    SDL_SetWindowPosition(windowNormal, 0, 0);
-    SDL_SetWindowPosition(windowBlur, dm.w / 2, 0);
-    
-    SDL_Surface *screenNormal = SDL_GetWindowSurface(windowNormal);
-    if (!screenNormal) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Surface *screenBlur = SDL_GetWindowSurface(windowBlur);
-    if (!screenBlur) {
-        fprintf(stderr, "Impossibile ottenere la surface della finestra: %s\n", SDL_GetError());
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-    }
-    
-    SDL_Surface* image = load_img(IMG_PATH);
-    
-    SDL_Surface* blurred = gaussian_blur(image);
-
-    if (!blurred) {
-        fprintf(stderr, "Errore durante il Gaussian blur\n");
-        SDL_FreeSurface(image);
-        SDL_DestroyWindow(windowNormal);
-        SDL_DestroyWindow(windowBlur);
-        IMG_Quit();
-        SDL_Quit();
-        return 1;
-
-    }
-
-    SDL_SaveBMP(blurred, "immagine_sfocata.bmp");
-
-    SDL_BlitScaled(image, NULL, screenNormal, NULL);
-    SDL_UpdateWindowSurface(windowNormal);
-    
-    SDL_BlitScaled(blurred, NULL, screenBlur, NULL);
-    SDL_UpdateWindowSurface(windowBlur);
-    
-    SDL_Delay(4000);
-    
-    SDL_DestroyWindow(windowNormal);
-    SDL_DestroyWindow(windowBlur);
-    
     SDL_FreeSurface(blurred);
     SDL_FreeSurface(image);
     IMG_Quit();
     SDL_Quit();
+
 
     return 0;
 }
